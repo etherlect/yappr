@@ -32,8 +32,16 @@ import { backupRemoteDb, backupLabel } from "./backup.js";
 // Chart line colors (raw ANSI, fed to asciichart). Spend = 16-color red; earned = the
 // same truecolor green the rest of the TUI uses (the 16-color green renders salmon on
 // some terminal themes).
-const CHART_SPEND = "\x1b[31m";
-const CHART_EARN = "\x1b[36m"; // cyan, matching the "earned" legend
+// Spent (red) / earned (cyan) as truecolor RGB triples — used by the stacked spent-vs-earned
+// bar chart (the boundary cell needs an fg AND bg color) and its legend. CHART_SPEND/EARN are
+// the escape-sequence forms the line charts feed to asciichart.
+const SPENT_RGB = "224;71;71", EARN_RGB = "0;188;212";
+const CHART_SPEND = `\x1b[38;2;${SPENT_RGB}m`;
+const CHART_EARN = `\x1b[38;2;${EARN_RGB}m`; // cyan, matching the "earned" legend
+// Plot rows for the spent/earned line charts. asciichart draws height+1 rows, so 8 → 9
+// rows + 1 axis = 10 content lines, matching the hourly bar chart (H=9 bars + 1 axis).
+// Override with STATUS_CHART_HEIGHT. (1-decimal y labels keep the rows distinct.)
+const LINE_CHART_HEIGHT = Math.max(3, Number(process.env.STATUS_CHART_HEIGHT || 8));
 
 // Expense-category colors as truecolor RGB triples (so they're stable across themes and
 // usable as a half-block cell background). Shared by the bar chart and its legend.
@@ -187,6 +195,7 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
           xapi: numArr(s.chart?.byType?.xapi),
           inference: numArr(s.chart?.byType?.inference),
           compute: numArr(s.chart?.byType?.compute),
+          earned: numArr(s.chart?.byType?.earned),
         },
       },
     };
@@ -197,7 +206,7 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
 
 // ─── parsing ──────────────────────────────────────────────────────────────────
 
-type Stats = { mentions: number; replies: number; llmTurns: number; spentUsd: number; warns: number; errors: number; earnedWeth: number; devWeth: number; spentUsdWindow: number; inferenceUsdWindow: number; earnedWethWindow: number; rateWindowHours: number; spentByType: { "x-api": number; inference: number; compute: number }; chart: { day: ChartSeries; all: ChartSeries; byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[] } } };
+type Stats = { mentions: number; replies: number; llmTurns: number; spentUsd: number; warns: number; errors: number; earnedWeth: number; devWeth: number; spentUsdWindow: number; inferenceUsdWindow: number; earnedWethWindow: number; rateWindowHours: number; spentByType: { "x-api": number; inference: number; compute: number }; chart: { day: ChartSeries; all: ChartSeries; byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; earned: number[] } } };
 type Pm2 = { status: string; bootMs: number; restarts: number; mem: number; cpu: number };
 type Specs = { cpu: string; ram: string; disk: string; os: string };
 
@@ -225,10 +234,11 @@ type ChartSeries = { spendUsd: number[]; earnedWeth: number[]; startMs: number; 
 const HOUR_MS = 3_600_000, DAY_MS = 86_400_000;
 const LABEL_OFFSET = 9; // asciichart's y-axis label column width (7-char label + " " + axis)
 
-// Compact money label, e.g. $0.3 / $1.2k / $3.4m (negative-zero stripped).
+// Compact money label, e.g. $0.3 / $4.7 / $45 / $1.2k / $3.4m (negative-zero stripped).
+// Keeps 1 decimal under $100 so closely-spaced axis rows don't collapse to the same label.
 function fmtMoney(x: number): string {
   const a = Math.abs(x);
-  let t = a >= 1e6 ? (x / 1e6).toFixed(1) + "m" : a >= 1000 ? (x / 1000).toFixed(1) + "k" : a >= 1 ? x.toFixed(0) : x.toFixed(1);
+  let t = a >= 1e6 ? (x / 1e6).toFixed(1) + "m" : a >= 1000 ? (x / 1000).toFixed(1) + "k" : a >= 100 ? x.toFixed(0) : x.toFixed(1);
   if (parseFloat(t) === 0) t = t.replace(/^-/, "");
   return "$" + t;
 }
@@ -287,7 +297,7 @@ function renderLineChart(cols: number, series: ChartSeries, ethUsd: number | nul
   const earn = ethUsd != null ? fitSeries(series.earnedWeth.map((v) => v * ethUsd), dataCols) : null;
   const seriesArr = earn && earn.length === spend.length ? [spend, earn] : [spend];
   const colors = seriesArr.length === 2 ? [CHART_SPEND, CHART_EARN] : [CHART_SPEND];
-  const lines = asciichart.plot(seriesArr, { height: 5, colors, format: (x: number) => fmtMoney(x).padEnd(7) }).split("\n");
+  const lines = asciichart.plot(seriesArr, { height: LINE_CHART_HEIGHT, colors, format: (x: number) => fmtMoney(x).padEnd(7) }).split("\n");
   lines.push(dim(adaptiveTimeAxis(LABEL_OFFSET, w, windowStart, windowEnd))); // x-axis spans the full window
   return lines;
 }
@@ -298,7 +308,7 @@ function renderLineChart(cols: number, series: ChartSeries, ethUsd: number | nul
 // vertical resolution (each text row = 2 sub-levels via ▀/▄/█ + fg/bg), so even thin
 // segments show. A y-axis shows the max; an x-axis shows the hours below.
 function renderHourlyBars(cols: number, byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[] }): string[] {
-  const N = 24, H = 7, EIGHTH = 8, SUB = H * EIGHTH, labelW = 8, HOUR = 3_600_000;
+  const N = 24, H = 9, EIGHTH = 8, SUB = H * EIGHTH, labelW = 8, HOUR = 3_600_000;
   const LOWER = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]; // lower-block fills, 0..8 eighths
   const plotW = Math.max(N, cols - 4 - labelW);
   const slot = plotW / N;
@@ -349,6 +359,54 @@ function renderHourlyBars(cols: number, byType: { startMs: number; xapi: number[
     lines.push(ylab.padEnd(labelW - 1) + "│" + row.join(""));
   }
   lines.push(dim(adaptiveTimeAxis(labelW, plotW, byType.startMs, byType.startMs + N * HOUR)));
+  return lines;
+}
+
+// Stacked vertical bars of per-hour spent (red) vs earned (cyan) over the last 24h — ONE
+// bar per hour like the expenses chart: spent on the bottom, earned stacked on top, total
+// height = spent + earned (USD). Eighth-block heights, two-color boundary cell via fg/bg.
+function renderHourlySpentEarned(cols: number, d: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; earned: number[] }, ethUsd: number | null): string[] {
+  const N = 24, H = 9, EIGHTH = 8, SUB = H * EIGHTH, labelW = 8, HOUR = 3_600_000;
+  const LOWER = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+  const plotW = Math.max(N, cols - 4 - labelW);
+  const slot = plotW / N;
+  const spent = Array.from({ length: N }, (_, i) => (d.xapi[i] ?? 0) + (d.inference[i] ?? 0) + (d.compute[i] ?? 0));
+  const earned = Array.from({ length: N }, (_, i) => (d.earned[i] ?? 0) * (ethUsd ?? 0));
+  const totals = spent.map((s, i) => s + earned[i]);
+  const max = Math.max(...totals, 1e-9);
+  // Per-hour heights in sub-levels: spent fills [0, sr), earned fills [sr, tr).
+  const seg = totals.map((tot, i) => {
+    const tr = Math.round((tot / max) * SUB);
+    let sr = tot > 0 ? Math.round((spent[i] / tot) * tr) : 0;
+    if (sr > tr) sr = tr;
+    return { sr, tr };
+  });
+  const subColor = (sg: { sr: number; tr: number }, sub: number): string | null =>
+    sub < sg.sr ? SPENT_RGB : sub < sg.tr ? EARN_RGB : null;
+  // One eighth-resolution cell: bottom color fills `h1` eighths (fg), the color above is bg.
+  const cellAt = (sg: { sr: number; tr: number }, base: number): string => {
+    const c1 = subColor(sg, base);
+    if (!c1) return " ";
+    let h1 = 1;
+    while (h1 < EIGHTH && subColor(sg, base + h1) === c1) h1++;
+    const c2 = h1 < EIGHTH ? subColor(sg, base + h1) : null;
+    return c2 ? `\x1b[38;2;${c1};48;2;${c2}m${LOWER[h1]}\x1b[0m` : `\x1b[38;2;${c1}m${LOWER[h1]}\x1b[0m`;
+  };
+  const barW = Math.max(1, Math.round(slot * 0.5));
+  const lines: string[] = [];
+  for (let r = 0; r < H; r++) {
+    const base = (H - 1 - r) * EIGHTH;
+    const row = new Array<string>(plotW).fill(" ");
+    for (let h = 0; h < N; h++) {
+      const ch = cellAt(seg[h], base);
+      if (ch === " ") continue;
+      const colStart = Math.round(h * slot + (slot - barW) / 2);
+      for (let w = 0; w < barW && colStart + w < plotW; w++) row[colStart + w] = ch;
+    }
+    const ylab = r === H - 1 ? "$0" : fmtMoney((max * (H - r)) / H);
+    lines.push(ylab.padEnd(labelW - 1) + "│" + row.join(""));
+  }
+  lines.push(dim(adaptiveTimeAxis(labelW, plotW, d.startMs, d.startMs + N * HOUR)));
   return lines;
 }
 
@@ -725,23 +783,26 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
     `${red(String(s.errors))} ${dim("errors")}`,
   ], cols - 4)], cols));
 
-  // CHART panel — three views cycled with ←/→: (0) last 24h, (1) all-time, (2) expenses by
-  // category. Sits between ACTIVITY and LOGS (shrinks LOGS). Line views show a placeholder
-  // until there's data (e.g. while a pre-chart engine build is still deployed).
-  const ci = ((state.chartIndex % 3) + 3) % 3;
-  const nav = dim(`[${ci + 1}/3 ←/→]`);
+  // CHART panel — four views cycled with ←/→: (0) spent/earned last 24h, (1) hourly spent
+  // vs earned, (2) hourly expenses by category, (3) spent/earned all-time. Sits between
+  // ACTIVITY and LOGS (shrinks LOGS). Views show a placeholder until there's data.
+  const ci = ((state.chartIndex % 4) + 4) % 4;
+  const nav = dim(`[${ci + 1}/4 ←/→]`);
   const placeholder = [dim("collecting data… (redeploy if the agent predates this feature)")];
   const hasData = (c: ChartSeries) => c.spendUsd.length >= 2 && c.endMs > c.startMs;
   let chartTitle: string;
   let chartLines: string[];
-  if (ci === 2) {
+  if (ci === 1) {
+    chartTitle = `HOURLY SPENT vs EARNED  ${dim("· 24h ·")} ${catColor(SPENT_RGB)("spent")} ${dim("/")} ${catColor(EARN_RGB)("earned")}  ${nav}`;
+    chartLines = s.chart.byType.startMs > 0 ? renderHourlySpentEarned(cols, s.chart.byType, b?.ethUsd ?? null) : placeholder;
+  } else if (ci === 2) {
     chartTitle = `HOURLY EXPENSES  ${dim("· 24h ·")} ${catColor(CAT_RGB.xapi)("x-api")} ${dim("/")} ${catColor(CAT_RGB.inference)("inference")} ${dim("/")} ${catColor(CAT_RGB.compute)("compute")}  ${nav}`;
     chartLines = s.chart.byType.startMs > 0 ? renderHourlyBars(cols, s.chart.byType) : placeholder;
-  } else if (ci === 1) {
-    chartTitle = `SPENT vs EARNED  ${dim("· all time ·")} ${red("spent")} ${dim("/")} ${cyan("earned")}  ${nav}`;
+  } else if (ci === 3) {
+    chartTitle = `SPENT vs EARNED  ${dim("· all time ·")} ${catColor(SPENT_RGB)("spent")} ${dim("/")} ${catColor(EARN_RGB)("earned")}  ${nav}`;
     chartLines = hasData(s.chart.all) ? renderLineChart(cols, s.chart.all, b?.ethUsd ?? null, s.chart.all.startMs, s.chart.all.endMs) : placeholder;
   } else {
-    chartTitle = `SPENT vs EARNED  ${dim("· 24h ·")} ${red("spent")} ${dim("/")} ${cyan("earned")}  ${nav}`;
+    chartTitle = `SPENT vs EARNED  ${dim("· 24h ·")} ${catColor(SPENT_RGB)("spent")} ${dim("/")} ${catColor(EARN_RGB)("earned")}  ${nav}`;
     chartLines = hasData(s.chart.day) ? renderLineChart(cols, s.chart.day, b?.ethUsd ?? null, s.chart.day.startMs, s.chart.day.startMs + 24 * HOUR_MS) : placeholder;
   }
   out.push(...panel(chartTitle, chartLines, cols));
@@ -768,7 +829,7 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
         key("up/dn", "scroll"), key("g/G", "top/live"), key("←/→", "chart"),
         key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"),
         key("q", "quit"),
-      ].join(dim("  "));
+      ].join(dim("  ")) + `   ${dim("· safe to quit — reopen with")} ${accent("npx yappr status")}`;
   out.push(fit(footer, cols));
 
   return out;
@@ -806,7 +867,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
   const interactive = !!process.stdout.isTTY;
   const state: State = {
     ip: target.ip, handle, admins: admins || dim("none"), wallet: null,
-    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, devWeth: 0, spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0, spentByType: { "x-api": 0, inference: 0, compute: 0 }, chart: { day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 }, all: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 }, byType: { startMs: 0, xapi: [], inference: [], compute: [] } } },
+    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, devWeth: 0, spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0, spentByType: { "x-api": 0, inference: 0, compute: 0 }, chart: { day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 }, all: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 }, byType: { startMs: 0, xapi: [], inference: [], compute: [], earned: [] } } },
     logs: [], pm2: null, specs: null, frame: 0, balances: null, computeHours: null,
     creditUsd: null,
     sysCpu: null, sysMemMb: null, sysDiskUsed: null, scroll: 0, logRows: 0, confirm: null,
@@ -977,8 +1038,8 @@ export async function runStatus(target: { ip: string; password?: string; handle?
         if (s === "s") { state.confirm = { prompt: "Stop yappr?", action: () => void runPm2("stop") }; render(state); return; }
         if (s === "S") { state.confirm = { prompt: "Start yappr?", action: () => void runPm2("start") }; render(state); return; }
         if (s === "d") { state.confirm = { prompt: "Re-deploy yappr? (exits dashboard)", action: redeploy }; render(state); return; }
-        if (s === "\x1b[C") { state.chartIndex = (state.chartIndex + 1) % 3; render(state); return; } // → next chart
-        if (s === "\x1b[D") { state.chartIndex = (state.chartIndex + 2) % 3; render(state); return; } // ← prev chart
+        if (s === "\x1b[C") { state.chartIndex = (state.chartIndex + 1) % 4; render(state); return; } // → next chart
+        if (s === "\x1b[D") { state.chartIndex = (state.chartIndex + 3) % 4; render(state); return; } // ← prev chart
         let sc = state.scroll;
         if (s === "\x1b[A" || s === "k") sc += 1;            // up
         else if (s === "\x1b[B" || s === "j") sc -= 1;       // down
@@ -1063,7 +1124,7 @@ function demo() {
     ip: "203.0.113.7", handle: "evvrbot", admins: "@alice, @bob", wallet: "0xA1b2C3d4E5f6A7b8C9d0E1f2A3b4C5d6E7f80910",
     stats: { mentions: 37, replies: 29, llmTurns: 84, spentUsd: 0.7345, warns: 1, errors: 0, earnedWeth: 0.0512, devWeth: 0.0123, spentUsdWindow: 96, inferenceUsdWindow: 1.2, earnedWethWindow: 0.004, rateWindowHours: 24,
       spentByType: { "x-api": 0.55, inference: 0.06, compute: 0.12 },
-      chart: (() => { const sp: number[] = [], ew: number[] = []; let a = 0, b2 = 0; for (let i = 0; i < 60; i++) { a += 0.012; b2 += i > 15 ? 0.0009 : 0; sp.push(a); ew.push(b2); } const day = { spendUsd: sp, earnedWeth: ew, startMs: Date.now() - 5 * 3_600_000, endMs: Date.now() }; const all = { spendUsd: sp, earnedWeth: ew, startMs: Date.now() - 40 * 86_400_000, endMs: Date.now() }; const x: number[] = [], inf: number[] = [], c: number[] = []; for (let i = 0; i < 24; i++) { x.push(i >= 12 ? 0.02 + (i % 3) * 0.005 : 0); inf.push(i >= 12 ? 0.003 : 0); c.push(i === 18 ? 0.06 : 0); } const byType = { startMs: Date.now() - 23 * 3_600_000, xapi: x, inference: inf, compute: c }; return { day, all, byType }; })() },
+      chart: (() => { const sp: number[] = [], ew: number[] = []; let a = 0, b2 = 0; for (let i = 0; i < 60; i++) { a += 0.012; b2 += i > 15 ? 0.0009 : 0; sp.push(a); ew.push(b2); } const day = { spendUsd: sp, earnedWeth: ew, startMs: Date.now() - 5 * 3_600_000, endMs: Date.now() }; const all = { spendUsd: sp, earnedWeth: ew, startMs: Date.now() - 40 * 86_400_000, endMs: Date.now() }; const x: number[] = [], inf: number[] = [], c: number[] = [], ea: number[] = []; for (let i = 0; i < 24; i++) { x.push(i >= 12 ? 0.02 + (i % 3) * 0.005 : 0); inf.push(i >= 12 ? 0.003 : 0); c.push(i === 18 ? 0.06 : 0); ea.push(i >= 14 ? 0.000005 + (i % 4) * 0.000002 : 0); } const byType = { startMs: Date.now() - 23 * 3_600_000, xapi: x, inference: inf, compute: c, earned: ea }; return { day, all, byType }; })() },
     pm2: { status: "online", bootMs: Date.now() - 8_120_000, restarts: 2, mem: 149 * 1024 * 1024, cpu: 3 },
     specs: { cpu: "2", ram: "1.9Gi", disk: "25G", os: "Ubuntu 24.04.1 LTS" },
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
@@ -1092,7 +1153,7 @@ function check(cols = 143, rows = 40) {
   const long = String.raw`[2026-06-08 15:21:32] INFO: x-api GET /tweets/mentions {"path":"/tweets/mentions","params":{"auth_token":"[redacted]","ct0":"[redacted]"}}`;
   const state: State = {
     ip: "95.179.144.82", handle: "evvrbot", admins: "@alexben0006", wallet: "0xe6440ce076a5b491e7d6378223517d60a96b1326",
-    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, devWeth: 0, spentUsdWindow: 12, inferenceUsdWindow: 1, earnedWethWindow: 0.001, rateWindowHours: 24, spentByType: { "x-api": 8, inference: 1, compute: 3 }, chart: { day: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.2), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.00005), startMs: Date.now() - 24 * 3_600_000, endMs: Date.now() }, all: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.5), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.0001), startMs: Date.now() - 40 * 86_400_000, endMs: Date.now() }, byType: { startMs: Date.now() - 23 * 3_600_000, xapi: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.02 : 0), inference: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.003 : 0), compute: Array.from({ length: 24 }, (_, i) => i === 16 ? 0.05 : 0) } } },
+    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, devWeth: 0, spentUsdWindow: 12, inferenceUsdWindow: 1, earnedWethWindow: 0.001, rateWindowHours: 24, spentByType: { "x-api": 8, inference: 1, compute: 3 }, chart: { day: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.2), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.00005), startMs: Date.now() - 24 * 3_600_000, endMs: Date.now() }, all: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.5), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.0001), startMs: Date.now() - 40 * 86_400_000, endMs: Date.now() }, byType: { startMs: Date.now() - 23 * 3_600_000, xapi: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.02 : 0), inference: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.003 : 0), compute: Array.from({ length: 24 }, (_, i) => i === 16 ? 0.05 : 0), earned: Array.from({ length: 24 }, (_, i) => i >= 14 ? 0.000006 : 0) } } },
     pm2: { status: "online", bootMs: Date.now() - 945_000, restarts: 1, mem: 110 * 1024 * 1024, cpu: 0.4 },
     specs: { cpu: "1", ram: "951Mi", disk: "23G", os: "Ubuntu 22.04.5 LTS" }, frame: 0, scroll: 0, logRows: 0,
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },

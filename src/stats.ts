@@ -45,7 +45,7 @@ export type Summary = {
     all: { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number };
     // Per-hour spend by type over the last 24h (24 buckets, clock-aligned, NOT cumulative)
     // for the stacked bar chart. startMs is the first bucket's (clock-hour) start.
-    byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[] };
+    byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; earned: number[] };
   };
 };
 
@@ -173,27 +173,36 @@ function buildSeries(d: Conn, startMs: number, endMs: number): ChartSeries {
   return { spendUsd, earnedWeth, startMs, endMs };
 }
 
-// Per-hour spend by type over the 24 clock-hours ending with the current hour. Returns 24
-// buckets per type (USD, not cumulative) for the stacked hourly bar chart, plus the first
-// bucket's start (clock-aligned). Bucketed in SQL by hour index.
-function buildHourlyByType(d: Conn): { startMs: number; xapi: number[]; inference: number[]; compute: number[] } {
+// Per-hour spend by type AND per-hour earnings over the 24 clock-hours ending with the
+// current hour. Returns 24 buckets each (spend USD by type; earned WETH), not cumulative,
+// plus the first bucket's (clock-aligned) start. For the hourly bar charts. Bucketed in SQL.
+function buildHourlyByType(d: Conn): { startMs: number; xapi: number[]; inference: number[]; compute: number[]; earned: number[] } {
   const N = 24, HOUR = 3_600_000;
   const startMs = Math.floor(Date.now() / HOUR) * HOUR - (N - 1) * HOUR; // 24 hours ending this hour
   const xapi = new Array<number>(N).fill(0), inference = new Array<number>(N).fill(0), compute = new Array<number>(N).fill(0);
+  const earned = new Array<number>(N).fill(0);
   const startSec = startMs / 1000;
+  const startIso = new Date(startMs).toISOString(), endIso = new Date(startMs + N * HOUR).toISOString();
   const rows = d.prepare(`
     SELECT CAST((unixepoch(ts) - ?) / 3600 AS INTEGER) AS b, type, COALESCE(SUM(usdc), 0) AS u
     FROM events
     WHERE kind = 'spend' AND ts >= ? AND ts < ?
     GROUP BY b, type
-  `).all(startSec, new Date(startMs).toISOString(), new Date(startMs + N * HOUR).toISOString()) as Array<{ b: number; type: string; u: number }>;
+  `).all(startSec, startIso, endIso) as Array<{ b: number; type: string; u: number }>;
   for (const r of rows) {
     if (r.b < 0 || r.b >= N) continue;
     if (r.type === "x-api") xapi[r.b] += r.u || 0;
     else if (r.type === "inference") inference[r.b] += r.u || 0;
     else if (r.type === "compute") compute[r.b] += r.u || 0;
   }
-  return { startMs, xapi, inference, compute };
+  const erows = d.prepare(`
+    SELECT CAST((unixepoch(ts) - ?) / 3600 AS INTEGER) AS b, COALESCE(SUM(weth), 0) AS w
+    FROM events
+    WHERE kind = 'earned' AND ts >= ? AND ts < ?
+    GROUP BY b
+  `).all(startSec, startIso, endIso) as Array<{ b: number; w: number }>;
+  for (const r of erows) if (r.b >= 0 && r.b < N) earned[r.b] += r.w || 0;
+  return { startMs, xapi, inference, compute, earned };
 }
 
 // All-time rolled-up totals, computed straight from the events table. Cheap with the
@@ -206,7 +215,7 @@ export function summary(): Summary {
     chart: {
       day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 },
       all: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 },
-      byType: { startMs: 0, xapi: [], inference: [], compute: [] },
+      byType: { startMs: 0, xapi: [], inference: [], compute: [], earned: [] },
     },
   };
   const d = conn();
