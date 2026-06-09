@@ -364,8 +364,6 @@ type State = {
   scroll: number; logRows: number;
   // Pending command awaiting a y/n confirmation in the footer (null = none).
   confirm: { prompt: string; action: () => void } | null;
-  // Whether the spend-vs-earnings chart panel is shown (toggled with `c`).
-  chartVisible: boolean;
 };
 
 // Pad a content array with blank rows so stacked panels share one height.
@@ -559,9 +557,12 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   ], cols - 4)], cols));
 
   // CHART panel — cumulative spend (red) vs earnings (green) over the last 24h, in USD.
-  // Toggle with `c`; hidden automatically on short terminals so it never starves LOGS.
+  // Always shown between ACTIVITY and LOGS (it shrinks LOGS). Until there's data — right
+  // after launch, or while the deployed box still runs a pre-chart engine build — it
+  // shows a placeholder instead of the plot.
   const chartSpend = s.chart.spendUsd;
-  if (state.chartVisible && rows >= 26 && chartSpend.length >= 2 && chartSpend[chartSpend.length - 1] > 0) {
+  const chartTitle = `SPEND vs EARNED  ${dim("· 24h ·")} ${red("spend")} ${dim("/")} ${green("earned")} ${dim("(USD)")}`;
+  if (chartSpend.length >= 2 && chartSpend[chartSpend.length - 1] > 0) {
     const w = Math.max(8, cols - 16); // leave room for the y-axis labels
     const spend = fitSeries(chartSpend, w);
     const earn = b?.ethUsd != null ? fitSeries(s.chart.earnedWeth.map((v) => v * b.ethUsd!), w) : null;
@@ -573,10 +574,9 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
       return ("$" + t).padStart(7);
     };
     const lines = asciichart.plot(seriesArr, { height: 5, colors, format: fmtAxis }).split("\n");
-    const title = earn
-      ? `SPEND vs EARNED  ${dim("· 24h ·")} ${red("spend")} ${dim("/")} ${green("earned")} ${dim("(USD)")}`
-      : `SPEND  ${dim("· 24h (USD)")}`;
-    out.push(...panel(title, lines, cols));
+    out.push(...panel(chartTitle, lines, cols));
+  } else {
+    out.push(...panel(chartTitle, [dim("collecting data… (redeploy if the agent predates the chart feature)")], cols));
   }
 
   // LOGS panel fills the rest (less one row for the footer), with a scroll offset
@@ -598,7 +598,7 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   const footer = state.confirm
     ? `${yellow(state.confirm.prompt)}  ${accent("y")}${dim("/")}${accent("Enter")} ${dim("to confirm, any other key cancels")}`
     : [
-        key("up/dn", "scroll"), key("g/G", "top/live"), key("c", "chart"),
+        key("up/dn", "scroll"), key("g/G", "top/live"),
         key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"),
         key("q", "quit"),
       ].join(dim("  "));
@@ -643,7 +643,6 @@ export async function runStatus(target: { ip: string; password?: string; handle?
     logs: [], pm2: null, specs: null, frame: 0, balances: null, computeHours: null,
     creditUsd: null,
     sysCpu: null, sysMemMb: null, sysDiskUsed: null, scroll: 0, logRows: 0, confirm: null,
-    chartVisible: true,
   };
 
   let renderTimer: NodeJS.Timeout | undefined;
@@ -810,7 +809,6 @@ export async function runStatus(target: { ip: string; password?: string; handle?
         if (s === "s") { state.confirm = { prompt: "Stop yappr?", action: () => void runPm2("stop") }; render(state); return; }
         if (s === "S") { state.confirm = { prompt: "Start yappr?", action: () => void runPm2("start") }; render(state); return; }
         if (s === "d") { state.confirm = { prompt: "Re-deploy yappr? (exits dashboard)", action: redeploy }; render(state); return; }
-        if (s === "c") { state.chartVisible = !state.chartVisible; render(state); return; }
         let sc = state.scroll;
         if (s === "\x1b[A" || s === "k") sc += 1;            // up
         else if (s === "\x1b[B" || s === "j") sc -= 1;       // down
@@ -903,7 +901,6 @@ function demo() {
     sysCpu: 3, sysMemMb: 600, sysDiskUsed: "12G",
     scroll: 0, logRows: 0,
     confirm: null,
-    chartVisible: true,
     frame: 0,
     logs: [
       "[2026-06-08 12:30:01] INFO: poll cycle start",
@@ -927,7 +924,7 @@ function check(cols = 143, rows = 40) {
     pm2: { status: "online", bootMs: Date.now() - 945_000, restarts: 1, mem: 110 * 1024 * 1024, cpu: 0.4 },
     specs: { cpu: "1", ram: "951Mi", disk: "23G", os: "Ubuntu 22.04.5 LTS" }, frame: 0, scroll: 0, logRows: 0,
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
-    computeHours: 19.5, creditUsd: 4.21, sysCpu: 4, sysMemMb: 740, sysDiskUsed: "9.1G", confirm: null, chartVisible: true,
+    computeHours: 19.5, creditUsd: 4.21, sysCpu: 4, sysMemMb: 740, sysDiskUsed: "9.1G", confirm: null,
     logs: Array.from({ length: 30 }, () => long),
   };
   const frame = buildFrame(state, cols, rows);
