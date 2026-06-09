@@ -39,6 +39,7 @@
     "@inquirer/prompts": "^8.5.2",
     "@x402/evm": "^2.13.0",
     "@x402/fetch": "^2.13.0",
+    "asciichart": "^1.5.25",
     "better-sqlite3": "^12.10.0",
     "cli-truncate": "^6.0.0",
     "dotenv": "^16.4.5",
@@ -52,6 +53,7 @@
   },
   "devDependencies": {
     "@bankr/cli": "^0.3.1",
+    "@types/asciichart": "^1.5.8",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",

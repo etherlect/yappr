@@ -59,7 +59,9 @@ logs) and derives three health metrics from the ledger + live on-chain balances:
 **Runway** (treasury USD ÷ gross burn across two tanks — USDC for x-api+compute, credits
 for inference — whichever empties first; cold-start and a downtime floor use the
 poll-cadence cost), **Sustainable** (window earnings ≥ window spend) and **Profitable**
-(all-time earnings − spend). The trailing-window figures come from `summary()`.
+(all-time earnings − spend). The trailing-window figures come from `summary()`, which
+also returns a `chart` series (cumulative spend/earn over 24h) that a toggleable (`c`)
+`asciichart` line chart plots.
 
 While open, the dashboard snapshots the server DB into `instance/backups/yappr-<date>.db`
 (one file per day, rolling 7) via `cli/backup.ts` — SQLite `VACUUM INTO` over SSH

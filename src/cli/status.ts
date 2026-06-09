@@ -25,8 +25,15 @@ import {
   computeInstancePassword,
   remainingComputeHours,
 } from "../compute.js";
+import * as asciichart from "asciichart";
 import { dim, bold, green, yellow, red, cyan, accent, YAPPR_LOGO } from "./ui.js";
 import { backupRemoteDb, backupLabel } from "./backup.js";
+
+// Chart line colors (raw ANSI, fed to asciichart). Spend = 16-color red; earned = the
+// same truecolor green the rest of the TUI uses (the 16-color green renders salmon on
+// some terminal themes).
+const CHART_SPEND = "\x1b[31m";
+const CHART_EARN = "\x1b[38;2;46;204;113m";
 
 const TREASURY_INTERVAL_MS = Number(process.env.TREASURY_INTERVAL_MS || 3_600_000);
 // How often the dashboard pulls a DB snapshot into instance/backups/ (default 20 min).
@@ -146,7 +153,8 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
   const res = await ssh.execCommand(STATS_QUERY_CMD, { cwd: "/" }).catch(() => null);
   if (!res?.stdout) return null;
   try {
-    const s = JSON.parse(res.stdout) as Record<string, number>;
+    const s = JSON.parse(res.stdout) as any;
+    const numArr = (a: unknown): number[] => (Array.isArray(a) ? a.map(Number) : []);
     return {
       mentions: Number(s.mentions) || 0,
       replies: Number(s.replies) || 0,
@@ -159,6 +167,7 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
       inferenceUsdWindow: Number(s.inferenceUsdWindow) || 0,
       earnedWethWindow: Number(s.earnedWethWindow) || 0,
       rateWindowHours: Number(s.rateWindowHours) || 0,
+      chart: { spendUsd: numArr(s.chart?.spendUsd), earnedWeth: numArr(s.chart?.earnedWeth) },
     };
   } catch {
     return null;
@@ -167,11 +176,20 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
 
 // ─── parsing ──────────────────────────────────────────────────────────────────
 
-type Stats = { mentions: number; replies: number; llmTurns: number; spentUsd: number; warns: number; errors: number; earnedWeth: number; spentUsdWindow: number; inferenceUsdWindow: number; earnedWethWindow: number; rateWindowHours: number };
+type Stats = { mentions: number; replies: number; llmTurns: number; spentUsd: number; warns: number; errors: number; earnedWeth: number; spentUsdWindow: number; inferenceUsdWindow: number; earnedWethWindow: number; rateWindowHours: number; chart: { spendUsd: number[]; earnedWeth: number[] } };
 type Pm2 = { status: string; bootMs: number; restarts: number; mem: number; cpu: number };
 type Specs = { cpu: string; ram: string; disk: string; os: string };
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+// Downsample a series to at most `width` points, keeping the endpoints — so a long
+// server-side series fits a narrower chart panel without distorting the trend.
+function fitSeries(arr: number[], width: number): number[] {
+  if (arr.length <= width) return arr;
+  const out: number[] = [];
+  for (let i = 0; i < width; i++) out.push(arr[Math.round((i * (arr.length - 1)) / (width - 1))]);
+  return out;
+}
 
 // Reject if a promise hasn't settled within `ms` — used to bound the on-quit backup
 // so a hung SSH/snapshot can't block the dashboard from exiting.
@@ -346,6 +364,8 @@ type State = {
   scroll: number; logRows: number;
   // Pending command awaiting a y/n confirmation in the footer (null = none).
   confirm: { prompt: string; action: () => void } | null;
+  // Whether the spend-vs-earnings chart panel is shown (toggled with `c`).
+  chartVisible: boolean;
 };
 
 // Pad a content array with blank rows so stacked panels share one height.
@@ -538,6 +558,27 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
     `${red(String(s.errors))} ${dim("errors")}`,
   ], cols - 4)], cols));
 
+  // CHART panel — cumulative spend (red) vs earnings (green) over the last 24h, in USD.
+  // Toggle with `c`; hidden automatically on short terminals so it never starves LOGS.
+  const chartSpend = s.chart.spendUsd;
+  if (state.chartVisible && rows >= 26 && chartSpend.length >= 2 && chartSpend[chartSpend.length - 1] > 0) {
+    const w = Math.max(8, cols - 16); // leave room for the y-axis labels
+    const spend = fitSeries(chartSpend, w);
+    const earn = b?.ethUsd != null ? fitSeries(s.chart.earnedWeth.map((v) => v * b.ethUsd!), w) : null;
+    const seriesArr = earn && earn.length === spend.length ? [spend, earn] : [spend];
+    const colors = seriesArr.length === 2 ? [CHART_SPEND, CHART_EARN] : [CHART_SPEND];
+    const fmtAxis = (x: number) => {
+      const a = Math.abs(x);
+      const t = a >= 1000 ? (x / 1000).toFixed(1) + "k" : a >= 1 ? x.toFixed(0) : x.toFixed(1);
+      return ("$" + t).padStart(7);
+    };
+    const lines = asciichart.plot(seriesArr, { height: 5, colors, format: fmtAxis }).split("\n");
+    const title = earn
+      ? `SPEND vs EARNED  ${dim("· 24h ·")} ${red("spend")} ${dim("/")} ${green("earned")} ${dim("(USD)")}`
+      : `SPEND  ${dim("· 24h (USD)")}`;
+    out.push(...panel(title, lines, cols));
+  }
+
   // LOGS panel fills the rest (less one row for the footer), with a scroll offset
   // (0 = following the live tail).
   const logRows = Math.max(3, rows - out.length - 3);
@@ -557,7 +598,7 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   const footer = state.confirm
     ? `${yellow(state.confirm.prompt)}  ${accent("y")}${dim("/")}${accent("Enter")} ${dim("to confirm, any other key cancels")}`
     : [
-        key("up/dn", "scroll"), key("g/G", "top/live"),
+        key("up/dn", "scroll"), key("g/G", "top/live"), key("c", "chart"),
         key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"),
         key("q", "quit"),
       ].join(dim("  "));
@@ -598,10 +639,11 @@ export async function runStatus(target: { ip: string; password?: string; handle?
   const interactive = !!process.stdout.isTTY;
   const state: State = {
     ip: target.ip, handle, admins: admins || dim("none"), wallet: null,
-    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0 },
+    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0, chart: { spendUsd: [], earnedWeth: [] } },
     logs: [], pm2: null, specs: null, frame: 0, balances: null, computeHours: null,
     creditUsd: null,
     sysCpu: null, sysMemMb: null, sysDiskUsed: null, scroll: 0, logRows: 0, confirm: null,
+    chartVisible: true,
   };
 
   let renderTimer: NodeJS.Timeout | undefined;
@@ -768,6 +810,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
         if (s === "s") { state.confirm = { prompt: "Stop yappr?", action: () => void runPm2("stop") }; render(state); return; }
         if (s === "S") { state.confirm = { prompt: "Start yappr?", action: () => void runPm2("start") }; render(state); return; }
         if (s === "d") { state.confirm = { prompt: "Re-deploy yappr? (exits dashboard)", action: redeploy }; render(state); return; }
+        if (s === "c") { state.chartVisible = !state.chartVisible; render(state); return; }
         let sc = state.scroll;
         if (s === "\x1b[A" || s === "k") sc += 1;            // up
         else if (s === "\x1b[B" || s === "j") sc -= 1;       // down
@@ -850,7 +893,8 @@ async function resolveTarget(instanceIdArg?: string): Promise<{ ip: string; pass
 function demo() {
   const state: State = {
     ip: "203.0.113.7", handle: "evvrbot", admins: "@alice, @bob", wallet: "0xA1b2C3d4E5f6A7b8C9d0E1f2A3b4C5d6E7f80910",
-    stats: { mentions: 37, replies: 29, llmTurns: 84, spentUsd: 0.7345, warns: 1, errors: 0, earnedWeth: 0.0512, spentUsdWindow: 96, inferenceUsdWindow: 1.2, earnedWethWindow: 0.004, rateWindowHours: 24 },
+    stats: { mentions: 37, replies: 29, llmTurns: 84, spentUsd: 0.7345, warns: 1, errors: 0, earnedWeth: 0.0512, spentUsdWindow: 96, inferenceUsdWindow: 1.2, earnedWethWindow: 0.004, rateWindowHours: 24,
+      chart: (() => { const sp: number[] = [], ew: number[] = []; let a = 0, b2 = 0; for (let i = 0; i < 60; i++) { a += 0.012; b2 += i > 15 ? 0.0009 : 0; sp.push(a); ew.push(b2); } return { spendUsd: sp, earnedWeth: ew }; })() },
     pm2: { status: "online", bootMs: Date.now() - 8_120_000, restarts: 2, mem: 149 * 1024 * 1024, cpu: 3 },
     specs: { cpu: "2", ram: "1.9Gi", disk: "25G", os: "Ubuntu 24.04.1 LTS" },
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
@@ -859,6 +903,7 @@ function demo() {
     sysCpu: 3, sysMemMb: 600, sysDiskUsed: "12G",
     scroll: 0, logRows: 0,
     confirm: null,
+    chartVisible: true,
     frame: 0,
     logs: [
       "[2026-06-08 12:30:01] INFO: poll cycle start",
@@ -878,11 +923,11 @@ function check(cols = 143, rows = 40) {
   const long = String.raw`[2026-06-08 15:21:32] INFO: x-api GET /tweets/mentions {"path":"/tweets/mentions","params":{"auth_token":"[redacted]","ct0":"[redacted]"}}`;
   const state: State = {
     ip: "95.179.144.82", handle: "evvrbot", admins: "@alexben0006", wallet: "0xe6440ce076a5b491e7d6378223517d60a96b1326",
-    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, spentUsdWindow: 12, inferenceUsdWindow: 1, earnedWethWindow: 0.001, rateWindowHours: 24 },
+    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, spentUsdWindow: 12, inferenceUsdWindow: 1, earnedWethWindow: 0.001, rateWindowHours: 24, chart: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.2), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.00005) } },
     pm2: { status: "online", bootMs: Date.now() - 945_000, restarts: 1, mem: 110 * 1024 * 1024, cpu: 0.4 },
     specs: { cpu: "1", ram: "951Mi", disk: "23G", os: "Ubuntu 22.04.5 LTS" }, frame: 0, scroll: 0, logRows: 0,
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
-    computeHours: 19.5, creditUsd: 4.21, sysCpu: 4, sysMemMb: 740, sysDiskUsed: "9.1G", confirm: null,
+    computeHours: 19.5, creditUsd: 4.21, sysCpu: 4, sysMemMb: 740, sysDiskUsed: "9.1G", confirm: null, chartVisible: true,
     logs: Array.from({ length: 30 }, () => long),
   };
   const frame = buildFrame(state, cols, rows);
