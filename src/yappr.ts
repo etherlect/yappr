@@ -49,11 +49,16 @@ async function main() {
   const poller = createPoller(log);
   await poller.start({ processOld });
 
-  // Run a treasury/claim cycle on every startup before the recurring scheduler
-  // takes over: it claims fees if any have accrued, swaps to USDC, and tops up
-  // compute. Awaited so the agent is funded for the run ahead from the first tick.
-  log.info("running startup treasury cycle");
-  await runTreasuryCycle(treasury, log);
+  // First treasury/claim cycle runs a short delay after launch (not at t=0). Right at
+  // boot the wallet/Bankr fee indexer isn't always ready, so the claimable-fee check
+  // could report "no fees" before freshly-accrued fees became visible — then a later
+  // cycle would do the claim, making the boot log look wrong. The hourly scheduler below
+  // runs independently. (`runTreasuryCycle` self-catches, so this never crashes boot.)
+  const startupCycleDelayMs = Number(process.env.STARTUP_TREASURY_DELAY_MS || 10_000);
+  log.info({ delayMs: startupCycleDelayMs }, "scheduling startup treasury cycle");
+  const startupCycle = setTimeout(() => {
+    void runTreasuryCycle(treasury, log).catch((err) => log.error({ err }, "startup treasury cycle failed"));
+  }, startupCycleDelayMs);
 
   const stopTreasury = startTreasury(treasury, log);
   log.info("treasury scheduler started");
@@ -74,6 +79,7 @@ async function main() {
       log.info({ sig }, "shutting down");
       poller.stop();
       stopTreasury();
+      clearTimeout(startupCycle);
       clearInterval(earningsTimer);
       process.exit(0);
     });

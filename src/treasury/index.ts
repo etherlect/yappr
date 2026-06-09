@@ -35,9 +35,12 @@ type CreatorFeesResponse = {
     tokenAddress: string;
     claimable?: { token0: string; token1: string };
   }>;
-  // All-time creator fees earned for this launch, denominated in WETH by Bankr
-  // (it values every fee token in WETH). This is the "earned" figure we track.
+  // All-time creator fees earned for this launch, denominated in WETH by Bankr.
   lifetimeEarnedWeth?: string;
+  // WETH-side fee totals: `claimedWeth` is realized (already claimed), `claimableWeth`
+  // is pending. Their sum is the all-time WETH the creator position has earned —
+  // unlike `lifetimeEarnedWeth`, which Bankr reports as 0 until fees are claimed.
+  totals?: { claimedWeth?: string; claimableWeth?: string };
 };
 
 function erc20Balance(token: `0x${string}`, owner: `0x${string}`): Promise<bigint> {
@@ -196,14 +199,19 @@ export function createBankrTreasury(): Treasury {
       }
     },
 
-    // All-time creator fees earned (WETH), straight from Bankr's fees endpoint —
-    // the same one claimableFees() reads, but here we take the lifetime total. A
-    // read-only call (no payment); polled on a timer to feed the stats ledger.
+    // All-time creator fees earned (WETH), from Bankr's fees endpoint. We use
+    // claimed + claimable WETH (the `totals`) rather than `lifetimeEarnedWeth`, which
+    // Bankr reports as 0 until fees are actually claimed — so this reflects fees the
+    // moment they accrue and stays monotonic across claims. Read-only (no payment);
+    // polled on a timer to feed the stats ledger. (WETH side only — the token-side fee
+    // isn't valued in WETH by this endpoint.)
     async lifetimeEarned() {
       const res = await bankrApi<CreatorFeesResponse>(
         config.bankrApiKey,
         `/token-launches/${config.tokenAddress}/fees`,
       );
+      const t = res.totals;
+      if (t) return (parseFloat(t.claimedWeth ?? "0") || 0) + (parseFloat(t.claimableWeth ?? "0") || 0);
       return parseFloat(res.lifetimeEarnedWeth ?? "0") || 0;
     },
 

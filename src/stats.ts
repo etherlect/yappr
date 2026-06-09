@@ -6,7 +6,7 @@ import { withSchema } from "./db.js";
 //
 //   events(id, ts, kind, type, usdc, weth, n)   one row per counted thing. `ts` is
 //     ISO-8601, so date/hour bucketing and running-sum (cumulative) charts are plain
-//     SQL. kinds: spend | earned | mention | reply | llm | warn | error.
+//     SQL. kinds: spend | earned | dev | mention | reply | llm | warn | error.
 //   meta(key, value)                            gauges/bookkeeping that aren't events:
 //     last_earned_weth (earnings baseline) — used to turn an absolute cumulative
 //     reading into the increment appended as an `earned` event.
@@ -24,6 +24,8 @@ export type Summary = {
   spentUsd: number;
   spentByType: Record<SpendType, number>;
   earnedWeth: number;
+  // All-time WETH paid out to the dev address (dev fee), cumulative.
+  devWeth: number;
   // Trailing-window figures for the runway estimate (see status dashboard). The window
   // is the last RATE_WINDOW_MS, clamped to the agent's age. `spentUsdWindow` is total USD
   // spend; `inferenceUsdWindow` is the LLM (credit-funded) slice of it, so the USDC-funded
@@ -134,6 +136,13 @@ export function recordEarned(weth: number): void {
   setMeta("last_earned_weth", weth);
 }
 
+// WETH paid out to the dev address this treasury cycle (the dev fee). Each payment is its
+// own `dev` event (an increment), so summing them gives all-time dev revenue.
+export function recordDevWeth(weth: number): void {
+  if (!Number.isFinite(weth) || weth <= 0) return;
+  insert({ kind: "dev", weth });
+}
+
 type Conn = NonNullable<ReturnType<typeof conn>>;
 
 // Build a cumulative spend/earn chart series over [startMs, endMs] in CHART_BUCKETS evenly
@@ -192,7 +201,7 @@ function buildHourlyByType(d: Conn): { startMs: number; xapi: number[]; inferenc
 export function summary(): Summary {
   const empty: Summary = {
     mentions: 0, replies: 0, llm: 0, warns: 0, errors: 0,
-    spentUsd: 0, spentByType: { "x-api": 0, compute: 0, inference: 0 }, earnedWeth: 0,
+    spentUsd: 0, spentByType: { "x-api": 0, compute: 0, inference: 0 }, earnedWeth: 0, devWeth: 0,
     spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0,
     chart: {
       day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 },
@@ -210,7 +219,8 @@ export function summary(): Summary {
         COUNT(*)           FILTER (WHERE kind = 'llm')         AS llm,
         COUNT(*)           FILTER (WHERE kind = 'warn')        AS warns,
         COUNT(*)           FILTER (WHERE kind = 'error')       AS errors,
-        COALESCE(SUM(usdc) FILTER (WHERE kind = 'spend'), 0)   AS spentUsd
+        COALESCE(SUM(usdc) FILTER (WHERE kind = 'spend'), 0)   AS spentUsd,
+        COALESCE(SUM(weth) FILTER (WHERE kind = 'dev'),   0)   AS devWeth
       FROM events
     `).get() as Record<string, number>;
     const spentByType: Record<SpendType, number> = { "x-api": 0, compute: 0, inference: 0 };
@@ -243,7 +253,7 @@ export function summary(): Summary {
     return {
       mentions: agg.mentions, replies: agg.replies, llm: agg.llm, warns: agg.warns, errors: agg.errors,
       spentUsd: agg.spentUsd, spentByType,
-      earnedWeth: getMeta("last_earned_weth") ?? 0,
+      earnedWeth: getMeta("last_earned_weth") ?? 0, devWeth: agg.devWeth,
       spentUsdWindow: win.spentUsdWindow, inferenceUsdWindow: win.inferenceUsdWindow,
       earnedWethWindow: win.earnedWethWindow, rateWindowHours,
       chart: { day, all, byType },

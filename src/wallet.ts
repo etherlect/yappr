@@ -119,9 +119,14 @@ export async function submitTx(to: string, data: string): Promise<string> {
     log.info({ to, data: data.slice(0, 66) + "..." }, "bankr [dry run] submitTx");
     return "0xdry000000000000000000000000000000000000000000000000000000000000";
   }
-  const { txHash } = await bankrApi<{ txHash: string }>(config.bankrApiKey, "/wallet/submit", {
+  // Bankr's /wallet/submit expects the tx nested under `transaction` (not flat) and
+  // returns `transactionHash`.
+  const res = await bankrApi<{ transactionHash?: string; txHash?: string }>(config.bankrApiKey, "/wallet/submit", {
     method: "POST",
-    body: JSON.stringify({ to, data, chainId: 8453, waitForConfirmation: true }),
+    body: JSON.stringify({
+      transaction: { to, data, chainId: 8453 },
+      waitForConfirmation: true,
+    }),
   });
-  return txHash;
+  return res.transactionHash ?? res.txHash ?? "";
 }

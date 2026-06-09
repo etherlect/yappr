@@ -4,6 +4,8 @@ import {
   runOnBeforeClaim, runOnAfterClaim, runOnSwap,
 } from "../hooks/registry.js";
 import { type Treasury, WETH } from "./index.js";
+import { formatUnits } from "viem";
+import { recordDevWeth } from "../stats.js";
 
 // The self-funding loop, run on a timer (TREASURY_INTERVAL_MS). Each cycle:
 // claim fees → pay optional dev cut → burn a share of the token → keep a small ETH
@@ -100,6 +102,7 @@ export async function runTreasuryCycle(treasury: Treasury, log: Logger): Promise
           result.wethToDev = devWeth;
           result.txHashes.push(txHash);
           wethRemaining = weth - devWeth;
+          recordDevWeth(Number(formatUnits(devWeth, 18))); // track cumulative dev revenue (WETH)
           log.info({ devWeth: devWeth.toString(), txHash }, "weth sent to dev");
         }
       }
