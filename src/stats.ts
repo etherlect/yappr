@@ -33,10 +33,11 @@ export type Summary = {
   inferenceUsdWindow: number;
   earnedWethWindow: number;
   rateWindowHours: number;
-  // Cumulative spend (USD) and earnings (WETH) over the last 24h, in CHART_BUCKETS evenly
-  // spaced points (oldest→newest) for the dashboard's line chart. Earnings stay in WETH —
-  // the dashboard converts with the live ETH price.
-  chart: { spendUsd: number[]; earnedWeth: number[] };
+  // Cumulative spend (USD) and earnings (WETH) for the dashboard's line chart, in
+  // CHART_BUCKETS evenly spaced points (oldest→newest) over [startMs, endMs] — which runs
+  // from the first recorded event (capped to 24h ago) through now. Earnings stay in WETH;
+  // the dashboard converts with the live ETH price and uses startMs/endMs for the x-axis.
+  chart: { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number };
 };
 
 // Trailing window used to estimate the current burn/earn rate for runway (24h).
@@ -131,7 +132,7 @@ export function summary(): Summary {
     mentions: 0, replies: 0, llm: 0, warns: 0, errors: 0,
     spentUsd: 0, spentByType: { "x-api": 0, compute: 0, inference: 0 }, earnedWeth: 0,
     spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0,
-    chart: { spendUsd: [], earnedWeth: [] },
+    chart: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 },
   };
   const d = conn();
   if (!d) return empty;
@@ -165,22 +166,26 @@ export function summary(): Summary {
     const startMs = firstTs ? Math.max(Date.now() - RATE_WINDOW_MS, Date.parse(firstTs)) : Date.now();
     const rateWindowHours = Math.max(0, (Date.now() - startMs) / 3_600_000);
 
-    // Cumulative chart series over the window: bucket spend/earn events by time, then
-    // running-sum so the lines grow left→right.
-    const winStartMs = Date.now() - RATE_WINDOW_MS;
-    const bucketMs = RATE_WINDOW_MS / CHART_BUCKETS;
+    // Cumulative chart series from the first data point (= startMs, capped to 24h ago)
+    // through now: bucket spend/earn events by time, then running-sum so the lines grow
+    // left→right and the chart begins where activity began.
+    const chartEndMs = Date.now();
+    const span = Math.max(0, chartEndMs - startMs);
     const spendUsd = new Array<number>(CHART_BUCKETS).fill(0);
     const earnedWeth = new Array<number>(CHART_BUCKETS).fill(0);
-    const seriesRows = d.prepare(
-      "SELECT ts, kind, usdc, weth FROM events WHERE ts >= ? AND kind IN ('spend','earned')",
-    ).all(since) as Array<{ ts: string; kind: string; usdc: number | null; weth: number | null }>;
-    for (const r of seriesRows) {
-      let i = Math.floor((Date.parse(r.ts) - winStartMs) / bucketMs);
-      if (i < 0) i = 0; else if (i >= CHART_BUCKETS) i = CHART_BUCKETS - 1;
-      if (r.kind === "spend") spendUsd[i] += r.usdc ?? 0;
-      else earnedWeth[i] += r.weth ?? 0;
+    if (span > 0) {
+      const bucketMs = span / CHART_BUCKETS;
+      const seriesRows = d.prepare(
+        "SELECT ts, kind, usdc, weth FROM events WHERE ts >= ? AND kind IN ('spend','earned')",
+      ).all(new Date(startMs).toISOString()) as Array<{ ts: string; kind: string; usdc: number | null; weth: number | null }>;
+      for (const r of seriesRows) {
+        let i = Math.floor((Date.parse(r.ts) - startMs) / bucketMs);
+        if (i < 0) i = 0; else if (i >= CHART_BUCKETS) i = CHART_BUCKETS - 1;
+        if (r.kind === "spend") spendUsd[i] += r.usdc ?? 0;
+        else earnedWeth[i] += r.weth ?? 0;
+      }
+      for (let i = 1; i < CHART_BUCKETS; i++) { spendUsd[i] += spendUsd[i - 1]; earnedWeth[i] += earnedWeth[i - 1]; }
     }
-    for (let i = 1; i < CHART_BUCKETS; i++) { spendUsd[i] += spendUsd[i - 1]; earnedWeth[i] += earnedWeth[i - 1]; }
 
     return {
       mentions: agg.mentions, replies: agg.replies, llm: agg.llm, warns: agg.warns, errors: agg.errors,
@@ -188,7 +193,7 @@ export function summary(): Summary {
       earnedWeth: getMeta("last_earned_weth") ?? 0,
       spentUsdWindow: win.spentUsdWindow, inferenceUsdWindow: win.inferenceUsdWindow,
       earnedWethWindow: win.earnedWethWindow, rateWindowHours,
-      chart: { spendUsd, earnedWeth },
+      chart: { spendUsd, earnedWeth, startMs, endMs: chartEndMs },
     };
   } catch {
     return empty;

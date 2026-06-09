@@ -167,7 +167,7 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
       inferenceUsdWindow: Number(s.inferenceUsdWindow) || 0,
       earnedWethWindow: Number(s.earnedWethWindow) || 0,
       rateWindowHours: Number(s.rateWindowHours) || 0,
-      chart: { spendUsd: numArr(s.chart?.spendUsd), earnedWeth: numArr(s.chart?.earnedWeth) },
+      chart: { spendUsd: numArr(s.chart?.spendUsd), earnedWeth: numArr(s.chart?.earnedWeth), startMs: Number(s.chart?.startMs) || 0, endMs: Number(s.chart?.endMs) || 0 },
     };
   } catch {
     return null;
@@ -176,19 +176,55 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
 
 // ─── parsing ──────────────────────────────────────────────────────────────────
 
-type Stats = { mentions: number; replies: number; llmTurns: number; spentUsd: number; warns: number; errors: number; earnedWeth: number; spentUsdWindow: number; inferenceUsdWindow: number; earnedWethWindow: number; rateWindowHours: number; chart: { spendUsd: number[]; earnedWeth: number[] } };
+type Stats = { mentions: number; replies: number; llmTurns: number; spentUsd: number; warns: number; errors: number; earnedWeth: number; spentUsdWindow: number; inferenceUsdWindow: number; earnedWethWindow: number; rateWindowHours: number; chart: { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number } };
 type Pm2 = { status: string; bootMs: number; restarts: number; mem: number; cpu: number };
 type Specs = { cpu: string; ram: string; disk: string; os: string };
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
-// Downsample a series to at most `width` points, keeping the endpoints — so a long
-// server-side series fits a narrower chart panel without distorting the trend.
+// Resample a series to exactly `width` points (down- or up-sampling) with linear
+// interpolation, keeping the endpoints — so the chart fills the panel width regardless
+// of how many points the server sent.
 function fitSeries(arr: number[], width: number): number[] {
-  if (arr.length <= width) return arr;
+  if (arr.length === 0 || width < 1) return [];
+  if (arr.length === width) return arr;
+  if (width === 1) return [arr[arr.length - 1]];
   const out: number[] = [];
-  for (let i = 0; i < width; i++) out.push(arr[Math.round((i * (arr.length - 1)) / (width - 1))]);
+  for (let i = 0; i < width; i++) {
+    const pos = (i * (arr.length - 1)) / (width - 1);
+    const lo = Math.floor(pos);
+    const hi = Math.min(arr.length - 1, lo + 1);
+    out.push(arr[lo] + (arr[hi] - arr[lo]) * (pos - lo));
+  }
   return out;
+}
+
+// A time-axis row to sit under the chart: local-time "HH:00" ticks aligned to the plot
+// columns over the window [startMs, endMs]. `labelOffset` is asciichart's y-label column
+// width (9), `plotWidth` the number of plotted columns (plot col 0 = startMs, last = endMs).
+// Ticks thin out so the 5-char labels never collide; the newest hour is always anchored,
+// and the first tick is the start hour (floored), pinned to the left edge.
+function chartTimeAxis(labelOffset: number, plotWidth: number, startMs: number, endMs: number): string {
+  const total = labelOffset + plotWidth;
+  const cells = new Array(total).fill(" ");
+  const span = endMs - startMs;
+  if (span <= 0) return cells.join("");
+  const d = new Date(startMs);
+  d.setMinutes(0, 0, 0); // floor to the local hour at/just before the start (pins the left edge)
+  // Walk whole hours left→right, placing each "HH:00" centered on its column but skipping
+  // any that would touch the previous label — so labels thin out by spacing and never merge.
+  let lastEnd = labelOffset - 1;
+  for (let t = d.getTime(); t <= endMs; t += 3_600_000) {
+    const label = `${String(new Date(t).getHours()).padStart(2, "0")}:00`;
+    const plotCol = Math.round(((t - startMs) / span) * (plotWidth - 1));
+    let pos = labelOffset + plotCol - 2; // center the 5-char label under the tick
+    if (pos < labelOffset) pos = labelOffset;
+    if (pos + label.length > total) pos = total - label.length;
+    if (pos <= lastEnd) continue; // would overlap the previous label → skip this hour
+    for (let j = 0; j < label.length; j++) cells[pos + j] = label[j];
+    lastEnd = pos + label.length; // next label must leave a 1-col gap
+  }
+  return cells.join("");
 }
 
 // Reject if a promise hasn't settled within `ms` — used to bound the on-quit backup
@@ -561,19 +597,25 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   // after launch, or while the deployed box still runs a pre-chart engine build — it
   // shows a placeholder instead of the plot.
   const chartSpend = s.chart.spendUsd;
-  const chartTitle = `SPEND vs EARNED  ${dim("· 24h ·")} ${red("spend")} ${dim("/")} ${green("earned")} ${dim("(USD)")}`;
+  const chartTitle = `SPEND vs EARNED  ${dim("·")} ${red("spend")} ${dim("/")} ${green("earned")} ${dim("(USD)")}`;
   if (chartSpend.length >= 2 && chartSpend[chartSpend.length - 1] > 0) {
-    const w = Math.max(8, cols - 16); // leave room for the y-axis labels
+    // asciichart's output width = seriesLength + 9 (the y-axis label column). Size the
+    // series to fill the panel: inner (cols-4) − 9 = cols − 13.
+    const w = Math.max(8, cols - 13);
     const spend = fitSeries(chartSpend, w);
     const earn = b?.ethUsd != null ? fitSeries(s.chart.earnedWeth.map((v) => v * b.ethUsd!), w) : null;
     const seriesArr = earn && earn.length === spend.length ? [spend, earn] : [spend];
     const colors = seriesArr.length === 2 ? [CHART_SPEND, CHART_EARN] : [CHART_SPEND];
+    // Compact axis labels, always ≤7 chars (so the label column stays 9 wide): $1.2k / $3.4m.
+    // Left-aligned (padEnd) so the y-axis sits flush against the box, not indented.
     const fmtAxis = (x: number) => {
       const a = Math.abs(x);
-      const t = a >= 1000 ? (x / 1000).toFixed(1) + "k" : a >= 1 ? x.toFixed(0) : x.toFixed(1);
-      return ("$" + t).padStart(7);
+      let t = a >= 1e6 ? (x / 1e6).toFixed(1) + "m" : a >= 1000 ? (x / 1000).toFixed(1) + "k" : a >= 1 ? x.toFixed(0) : x.toFixed(1);
+      if (parseFloat(t) === 0) t = t.replace(/^-/, ""); // drop the "-0.0" negative-zero baseline
+      return ("$" + t).padEnd(7);
     };
     const lines = asciichart.plot(seriesArr, { height: 5, colors, format: fmtAxis }).split("\n");
+    lines.push(dim(chartTimeAxis(9, spend.length, s.chart.startMs, s.chart.endMs))); // local-time HH:00 axis
     out.push(...panel(chartTitle, lines, cols));
   } else {
     out.push(...panel(chartTitle, [dim("collecting data… (redeploy if the agent predates the chart feature)")], cols));
@@ -639,7 +681,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
   const interactive = !!process.stdout.isTTY;
   const state: State = {
     ip: target.ip, handle, admins: admins || dim("none"), wallet: null,
-    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0, chart: { spendUsd: [], earnedWeth: [] } },
+    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0, chart: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 } },
     logs: [], pm2: null, specs: null, frame: 0, balances: null, computeHours: null,
     creditUsd: null,
     sysCpu: null, sysMemMb: null, sysDiskUsed: null, scroll: 0, logRows: 0, confirm: null,
@@ -892,7 +934,7 @@ function demo() {
   const state: State = {
     ip: "203.0.113.7", handle: "evvrbot", admins: "@alice, @bob", wallet: "0xA1b2C3d4E5f6A7b8C9d0E1f2A3b4C5d6E7f80910",
     stats: { mentions: 37, replies: 29, llmTurns: 84, spentUsd: 0.7345, warns: 1, errors: 0, earnedWeth: 0.0512, spentUsdWindow: 96, inferenceUsdWindow: 1.2, earnedWethWindow: 0.004, rateWindowHours: 24,
-      chart: (() => { const sp: number[] = [], ew: number[] = []; let a = 0, b2 = 0; for (let i = 0; i < 60; i++) { a += 0.012; b2 += i > 15 ? 0.0009 : 0; sp.push(a); ew.push(b2); } return { spendUsd: sp, earnedWeth: ew }; })() },
+      chart: (() => { const sp: number[] = [], ew: number[] = []; let a = 0, b2 = 0; for (let i = 0; i < 60; i++) { a += 0.012; b2 += i > 15 ? 0.0009 : 0; sp.push(a); ew.push(b2); } return { spendUsd: sp, earnedWeth: ew, startMs: Date.now() - 5 * 3_600_000, endMs: Date.now() }; })() },
     pm2: { status: "online", bootMs: Date.now() - 8_120_000, restarts: 2, mem: 149 * 1024 * 1024, cpu: 3 },
     specs: { cpu: "2", ram: "1.9Gi", disk: "25G", os: "Ubuntu 24.04.1 LTS" },
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
@@ -920,7 +962,7 @@ function check(cols = 143, rows = 40) {
   const long = String.raw`[2026-06-08 15:21:32] INFO: x-api GET /tweets/mentions {"path":"/tweets/mentions","params":{"auth_token":"[redacted]","ct0":"[redacted]"}}`;
   const state: State = {
     ip: "95.179.144.82", handle: "evvrbot", admins: "@alexben0006", wallet: "0xe6440ce076a5b491e7d6378223517d60a96b1326",
-    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, spentUsdWindow: 12, inferenceUsdWindow: 1, earnedWethWindow: 0.001, rateWindowHours: 24, chart: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.2), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.00005) } },
+    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, spentUsdWindow: 12, inferenceUsdWindow: 1, earnedWethWindow: 0.001, rateWindowHours: 24, chart: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.2), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.00005), startMs: Date.now() - 24 * 3_600_000, endMs: Date.now() } },
     pm2: { status: "online", bootMs: Date.now() - 945_000, restarts: 1, mem: 110 * 1024 * 1024, cpu: 0.4 },
     specs: { cpu: "1", ram: "951Mi", disk: "23G", os: "Ubuntu 22.04.5 LTS" }, frame: 0, scroll: 0, logRows: 0,
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
