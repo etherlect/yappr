@@ -4,6 +4,7 @@ import { bankrApi } from "./bankr.js";
 import { createBankrSigner, createPayFetch } from "./x402.js";
 import { resolveEvmAddress } from "./compute.js";
 import { recordSpend } from "./stats.js";
+import { sleep } from "./util.js";
 
 let _walletAddress: `0x${string}` | null = null;
 let _payFetch: typeof fetch | null = null;
@@ -114,19 +115,41 @@ export function paidUsd(res: Response): number | undefined {
   return atomic != null ? Number(atomic) / 1e6 : undefined;
 }
 
+// Fixed pause before each submit so rapid back-to-back treasury txs (dev cut → burn →
+// swap → extend) don't trip the Bankr signer's in-flight limit; and attempts/backoff for
+// retrying transient signer/provider errors (provider_inflight_limit, 5xx, timeouts, …).
+const SUBMIT_PAUSE_MS = Number(process.env.TX_SUBMIT_PAUSE_MS || 1500);
+const SUBMIT_MAX_ATTEMPTS = Number(process.env.TX_SUBMIT_MAX_ATTEMPTS || 5);
+
 export async function submitTx(to: string, data: string): Promise<string> {
   if (config.treasuryDryRun) {
     log.info({ to, data: data.slice(0, 66) + "..." }, "bankr [dry run] submitTx");
     return "0xdry000000000000000000000000000000000000000000000000000000000000";
   }
-  // Bankr's /wallet/submit expects the tx nested under `transaction` (not flat) and
-  // returns `transactionHash`.
-  const res = await bankrApi<{ transactionHash?: string; txHash?: string }>(config.bankrApiKey, "/wallet/submit", {
-    method: "POST",
-    body: JSON.stringify({
-      transaction: { to, data, chainId: 8453 },
-      waitForConfirmation: true,
-    }),
-  });
-  return res.transactionHash ?? res.txHash ?? "";
+  // Space submissions out, then retry any failure with exponential backoff (2s, 4s, 8s,
+  // 16s) — gives a busy signer time to clear before the next attempt.
+  await sleep(SUBMIT_PAUSE_MS);
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= SUBMIT_MAX_ATTEMPTS; attempt++) {
+    try {
+      // Bankr's /wallet/submit expects the tx nested under `transaction` (not flat) and
+      // returns `transactionHash`.
+      const res = await bankrApi<{ transactionHash?: string; txHash?: string }>(config.bankrApiKey, "/wallet/submit", {
+        method: "POST",
+        body: JSON.stringify({
+          transaction: { to, data, chainId: 8453 },
+          waitForConfirmation: true,
+        }),
+      });
+      return res.transactionHash ?? res.txHash ?? "";
+    } catch (err) {
+      lastErr = err;
+      if (attempt < SUBMIT_MAX_ATTEMPTS) {
+        const delayMs = 2000 * 2 ** (attempt - 1); // 2s → 4s → 8s → 16s
+        log.warn({ to, attempt, maxAttempts: SUBMIT_MAX_ATTEMPTS, delayMs, err: err instanceof Error ? err.message : String(err) }, "submitTx failed — retrying after backoff");
+        await sleep(delayMs);
+      }
+    }
+  }
+  throw lastErr;
 }
