@@ -33,12 +33,21 @@ export type Summary = {
   inferenceUsdWindow: number;
   earnedWethWindow: number;
   rateWindowHours: number;
-  // Cumulative spend (USD) and earnings (WETH) for the dashboard's line chart, in
-  // CHART_BUCKETS evenly spaced points (oldest→newest) over [startMs, endMs] — which runs
-  // from the first recorded event (capped to 24h ago) through now. Earnings stay in WETH;
-  // the dashboard converts with the live ETH price and uses startMs/endMs for the x-axis.
-  chart: { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number };
+  // Cumulative spend (USD) + earnings (WETH) series for the dashboard's line charts, each
+  // CHART_BUCKETS evenly spaced points (oldest→newest) over [startMs, endMs]. `day` is the
+  // last 24h (from max(now-24h, firstEvent)); `all` is the whole history (from the first
+  // event). Earnings stay in WETH; the dashboard converts with the live ETH price and uses
+  // startMs/endMs to label the x-axis.
+  chart: {
+    day: { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number };
+    all: { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number };
+    // Per-hour spend by type over the last 24h (24 buckets, clock-aligned, NOT cumulative)
+    // for the stacked bar chart. startMs is the first bucket's (clock-hour) start.
+    byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[] };
+  };
 };
+
+type ChartSeries = { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number };
 
 // Trailing window used to estimate the current burn/earn rate for runway (24h).
 const RATE_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -125,6 +134,59 @@ export function recordEarned(weth: number): void {
   setMeta("last_earned_weth", weth);
 }
 
+type Conn = NonNullable<ReturnType<typeof conn>>;
+
+// Build a cumulative spend/earn chart series over [startMs, endMs] in CHART_BUCKETS evenly
+// spaced points. Bucketing is done in SQL (one grouped row per bucket via unixepoch), so it
+// stays cheap no matter how many events the range covers — then we running-sum in JS.
+function buildSeries(d: Conn, startMs: number, endMs: number): ChartSeries {
+  const spendUsd = new Array<number>(CHART_BUCKETS).fill(0);
+  const earnedWeth = new Array<number>(CHART_BUCKETS).fill(0);
+  const span = endMs - startMs;
+  if (span > 0) {
+    const startSec = Math.floor(startMs / 1000);
+    const bucketSec = span / 1000 / CHART_BUCKETS;
+    const rows = d.prepare(`
+      SELECT CAST((unixepoch(ts) - ?) / ? AS INTEGER) AS b,
+             COALESCE(SUM(usdc) FILTER (WHERE kind = 'spend'),  0) AS spend,
+             COALESCE(SUM(weth) FILTER (WHERE kind = 'earned'), 0) AS earned
+      FROM events
+      WHERE ts >= ? AND kind IN ('spend','earned')
+      GROUP BY b
+    `).all(startSec, bucketSec, new Date(startMs).toISOString()) as Array<{ b: number; spend: number; earned: number }>;
+    for (const r of rows) {
+      const i = Math.min(CHART_BUCKETS - 1, Math.max(0, r.b));
+      spendUsd[i] += r.spend || 0;
+      earnedWeth[i] += r.earned || 0;
+    }
+    for (let i = 1; i < CHART_BUCKETS; i++) { spendUsd[i] += spendUsd[i - 1]; earnedWeth[i] += earnedWeth[i - 1]; }
+  }
+  return { spendUsd, earnedWeth, startMs, endMs };
+}
+
+// Per-hour spend by type over the 24 clock-hours ending with the current hour. Returns 24
+// buckets per type (USD, not cumulative) for the stacked hourly bar chart, plus the first
+// bucket's start (clock-aligned). Bucketed in SQL by hour index.
+function buildHourlyByType(d: Conn): { startMs: number; xapi: number[]; inference: number[]; compute: number[] } {
+  const N = 24, HOUR = 3_600_000;
+  const startMs = Math.floor(Date.now() / HOUR) * HOUR - (N - 1) * HOUR; // 24 hours ending this hour
+  const xapi = new Array<number>(N).fill(0), inference = new Array<number>(N).fill(0), compute = new Array<number>(N).fill(0);
+  const startSec = startMs / 1000;
+  const rows = d.prepare(`
+    SELECT CAST((unixepoch(ts) - ?) / 3600 AS INTEGER) AS b, type, COALESCE(SUM(usdc), 0) AS u
+    FROM events
+    WHERE kind = 'spend' AND ts >= ? AND ts < ?
+    GROUP BY b, type
+  `).all(startSec, new Date(startMs).toISOString(), new Date(startMs + N * HOUR).toISOString()) as Array<{ b: number; type: string; u: number }>;
+  for (const r of rows) {
+    if (r.b < 0 || r.b >= N) continue;
+    if (r.type === "x-api") xapi[r.b] += r.u || 0;
+    else if (r.type === "inference") inference[r.b] += r.u || 0;
+    else if (r.type === "compute") compute[r.b] += r.u || 0;
+  }
+  return { startMs, xapi, inference, compute };
+}
+
 // All-time rolled-up totals, computed straight from the events table. Cheap with the
 // kind/ts indexes; the dashboard polls this via the CLI.
 export function summary(): Summary {
@@ -132,7 +194,11 @@ export function summary(): Summary {
     mentions: 0, replies: 0, llm: 0, warns: 0, errors: 0,
     spentUsd: 0, spentByType: { "x-api": 0, compute: 0, inference: 0 }, earnedWeth: 0,
     spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0,
-    chart: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 },
+    chart: {
+      day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 },
+      all: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 },
+      byType: { startMs: 0, xapi: [], inference: [], compute: [] },
+    },
   };
   const d = conn();
   if (!d) return empty;
@@ -166,26 +232,13 @@ export function summary(): Summary {
     const startMs = firstTs ? Math.max(Date.now() - RATE_WINDOW_MS, Date.parse(firstTs)) : Date.now();
     const rateWindowHours = Math.max(0, (Date.now() - startMs) / 3_600_000);
 
-    // Cumulative chart series from the first data point (= startMs, capped to 24h ago)
-    // through now: bucket spend/earn events by time, then running-sum so the lines grow
-    // left→right and the chart begins where activity began.
-    const chartEndMs = Date.now();
-    const span = Math.max(0, chartEndMs - startMs);
-    const spendUsd = new Array<number>(CHART_BUCKETS).fill(0);
-    const earnedWeth = new Array<number>(CHART_BUCKETS).fill(0);
-    if (span > 0) {
-      const bucketMs = span / CHART_BUCKETS;
-      const seriesRows = d.prepare(
-        "SELECT ts, kind, usdc, weth FROM events WHERE ts >= ? AND kind IN ('spend','earned')",
-      ).all(new Date(startMs).toISOString()) as Array<{ ts: string; kind: string; usdc: number | null; weth: number | null }>;
-      for (const r of seriesRows) {
-        let i = Math.floor((Date.parse(r.ts) - startMs) / bucketMs);
-        if (i < 0) i = 0; else if (i >= CHART_BUCKETS) i = CHART_BUCKETS - 1;
-        if (r.kind === "spend") spendUsd[i] += r.usdc ?? 0;
-        else earnedWeth[i] += r.weth ?? 0;
-      }
-      for (let i = 1; i < CHART_BUCKETS; i++) { spendUsd[i] += spendUsd[i - 1]; earnedWeth[i] += earnedWeth[i - 1]; }
-    }
+    // Chart series for the dashboard: a 24h view (`day`, from startMs = max(now-24h,
+    // firstEvent)) and a whole-history view (`all`, from the first event) — both through now.
+    const chartNow = Date.now();
+    const firstDataMs = firstTs ? Date.parse(firstTs) : chartNow;
+    const day = buildSeries(d, startMs, chartNow);
+    const all = buildSeries(d, firstDataMs, chartNow);
+    const byType = buildHourlyByType(d);
 
     return {
       mentions: agg.mentions, replies: agg.replies, llm: agg.llm, warns: agg.warns, errors: agg.errors,
@@ -193,7 +246,7 @@ export function summary(): Summary {
       earnedWeth: getMeta("last_earned_weth") ?? 0,
       spentUsdWindow: win.spentUsdWindow, inferenceUsdWindow: win.inferenceUsdWindow,
       earnedWethWindow: win.earnedWethWindow, rateWindowHours,
-      chart: { spendUsd, earnedWeth, startMs, endMs: chartEndMs },
+      chart: { day, all, byType },
     };
   } catch {
     return empty;

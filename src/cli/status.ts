@@ -26,14 +26,19 @@ import {
   remainingComputeHours,
 } from "../compute.js";
 import * as asciichart from "asciichart";
-import { dim, bold, green, yellow, red, cyan, accent, YAPPR_LOGO } from "./ui.js";
+import { dim, bold, green, yellow, red, cyan, accent, border, YAPPR_LOGO } from "./ui.js";
 import { backupRemoteDb, backupLabel } from "./backup.js";
 
 // Chart line colors (raw ANSI, fed to asciichart). Spend = 16-color red; earned = the
 // same truecolor green the rest of the TUI uses (the 16-color green renders salmon on
 // some terminal themes).
 const CHART_SPEND = "\x1b[31m";
-const CHART_EARN = "\x1b[38;2;46;204;113m";
+const CHART_EARN = "\x1b[36m"; // cyan, matching the "earned" legend
+
+// Expense-category colors as truecolor RGB triples (so they're stable across themes and
+// usable as a half-block cell background). Shared by the bar chart and its legend.
+const CAT_RGB = { xapi: "0;188;212", inference: "215;119;87", compute: "234;179;8" } as const;
+const catColor = (rgb: string) => (s: string) => `\x1b[38;2;${rgb}m${s}\x1b[0m`;
 
 const TREASURY_INTERVAL_MS = Number(process.env.TREASURY_INTERVAL_MS || 3_600_000);
 // How often the dashboard pulls a DB snapshot into instance/backups/ (default 20 min).
@@ -155,6 +160,7 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
   try {
     const s = JSON.parse(res.stdout) as any;
     const numArr = (a: unknown): number[] => (Array.isArray(a) ? a.map(Number) : []);
+    const cs = (c: any): ChartSeries => ({ spendUsd: numArr(c?.spendUsd), earnedWeth: numArr(c?.earnedWeth), startMs: Number(c?.startMs) || 0, endMs: Number(c?.endMs) || 0 });
     return {
       mentions: Number(s.mentions) || 0,
       replies: Number(s.replies) || 0,
@@ -167,7 +173,21 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
       inferenceUsdWindow: Number(s.inferenceUsdWindow) || 0,
       earnedWethWindow: Number(s.earnedWethWindow) || 0,
       rateWindowHours: Number(s.rateWindowHours) || 0,
-      chart: { spendUsd: numArr(s.chart?.spendUsd), earnedWeth: numArr(s.chart?.earnedWeth), startMs: Number(s.chart?.startMs) || 0, endMs: Number(s.chart?.endMs) || 0 },
+      spentByType: {
+        "x-api": Number(s.spentByType?.["x-api"]) || 0,
+        inference: Number(s.spentByType?.inference) || 0,
+        compute: Number(s.spentByType?.compute) || 0,
+      },
+      chart: {
+        day: cs(s.chart?.day),
+        all: cs(s.chart?.all),
+        byType: {
+          startMs: Number(s.chart?.byType?.startMs) || 0,
+          xapi: numArr(s.chart?.byType?.xapi),
+          inference: numArr(s.chart?.byType?.inference),
+          compute: numArr(s.chart?.byType?.compute),
+        },
+      },
     };
   } catch {
     return null;
@@ -176,7 +196,7 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
 
 // ─── parsing ──────────────────────────────────────────────────────────────────
 
-type Stats = { mentions: number; replies: number; llmTurns: number; spentUsd: number; warns: number; errors: number; earnedWeth: number; spentUsdWindow: number; inferenceUsdWindow: number; earnedWethWindow: number; rateWindowHours: number; chart: { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number } };
+type Stats = { mentions: number; replies: number; llmTurns: number; spentUsd: number; warns: number; errors: number; earnedWeth: number; spentUsdWindow: number; inferenceUsdWindow: number; earnedWethWindow: number; rateWindowHours: number; spentByType: { "x-api": number; inference: number; compute: number }; chart: { day: ChartSeries; all: ChartSeries; byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[] } } };
 type Pm2 = { status: string; bootMs: number; restarts: number; mem: number; cpu: number };
 type Specs = { cpu: string; ram: string; disk: string; os: string };
 
@@ -199,32 +219,136 @@ function fitSeries(arr: number[], width: number): number[] {
   return out;
 }
 
-// A time-axis row to sit under the chart: local-time "HH:00" ticks aligned to the plot
-// columns over the window [startMs, endMs]. `labelOffset` is asciichart's y-label column
-// width (9), `plotWidth` the number of plotted columns (plot col 0 = startMs, last = endMs).
-// Ticks thin out so the 5-char labels never collide; the newest hour is always anchored,
-// and the first tick is the start hour (floored), pinned to the left edge.
-function chartTimeAxis(labelOffset: number, plotWidth: number, startMs: number, endMs: number): string {
+type ChartSeries = { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number };
+
+const HOUR_MS = 3_600_000, DAY_MS = 86_400_000;
+const LABEL_OFFSET = 9; // asciichart's y-axis label column width (7-char label + " " + axis)
+
+// Compact money label, e.g. $0.3 / $1.2k / $3.4m (negative-zero stripped).
+function fmtMoney(x: number): string {
+  const a = Math.abs(x);
+  let t = a >= 1e6 ? (x / 1e6).toFixed(1) + "m" : a >= 1000 ? (x / 1000).toFixed(1) + "k" : a >= 1 ? x.toFixed(0) : x.toFixed(1);
+  if (parseFloat(t) === 0) t = t.replace(/^-/, "");
+  return "$" + t;
+}
+
+// Adaptive x-axis row aligned to the plot columns over [startMs, endMs]: hourly ticks for
+// spans ≤2 days, daily up to ~75 days, else monthly. Labels are placed left→right and any
+// that would touch the previous one is skipped, so they thin to fit and never merge.
+function adaptiveTimeAxis(labelOffset: number, plotWidth: number, startMs: number, endMs: number): string {
   const total = labelOffset + plotWidth;
   const cells = new Array(total).fill(" ");
   const span = endMs - startMs;
   if (span <= 0) return cells.join("");
-  const d = new Date(startMs);
-  d.setMinutes(0, 0, 0); // floor to the local hour at/just before the start (pins the left edge)
-  // Walk whole hours left→right, placing each "HH:00" centered on its column but skipping
-  // any that would touch the previous label — so labels thin out by spacing and never merge.
+  const ticks: Array<{ t: number; label: string }> = [];
+  if (span <= 2 * DAY_MS) {
+    const d = new Date(startMs); d.setMinutes(0, 0, 0);
+    for (let t = d.getTime(); t <= endMs; t += HOUR_MS) ticks.push({ t, label: `${String(new Date(t).getHours()).padStart(2, "0")}:00` });
+  } else if (span <= 75 * DAY_MS) {
+    const d = new Date(startMs); d.setHours(0, 0, 0, 0);
+    for (let t = d.getTime(); t <= endMs; t += DAY_MS) ticks.push({ t, label: new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" }) });
+  } else {
+    const multiYear = span > 330 * DAY_MS;
+    const m = new Date(startMs); m.setDate(1); m.setHours(0, 0, 0, 0);
+    while (m.getTime() <= endMs) {
+      ticks.push({ t: m.getTime(), label: m.toLocaleDateString(undefined, multiYear ? { month: "short", year: "2-digit" } : { month: "short" }) });
+      m.setMonth(m.getMonth() + 1);
+    }
+  }
+  if (!ticks.length) return cells.join("");
+  // Thin uniformly: show every `step`-th tick so labels are evenly spaced and don't collide
+  // (greedy per-tick skipping looked irregular with many same-width hour labels).
+  const maxLen = Math.max(...ticks.map((t) => t.label.length));
+  const colsPerTick = plotWidth / ticks.length;
+  const step = Math.max(1, Math.ceil((maxLen + 2) / Math.max(colsPerTick, 0.001)));
   let lastEnd = labelOffset - 1;
-  for (let t = d.getTime(); t <= endMs; t += 3_600_000) {
-    const label = `${String(new Date(t).getHours()).padStart(2, "0")}:00`;
+  for (let i = 0; i < ticks.length; i += step) {
+    const { t, label } = ticks[i];
     const plotCol = Math.round(((t - startMs) / span) * (plotWidth - 1));
-    let pos = labelOffset + plotCol - 2; // center the 5-char label under the tick
+    let pos = labelOffset + plotCol - Math.floor(label.length / 2); // center under the tick
     if (pos < labelOffset) pos = labelOffset;
     if (pos + label.length > total) pos = total - label.length;
-    if (pos <= lastEnd) continue; // would overlap the previous label → skip this hour
+    if (pos <= lastEnd) continue; // safety: never overlap the previous label
     for (let j = 0; j < label.length; j++) cells[pos + j] = label[j];
-    lastEnd = pos + label.length; // next label must leave a 1-col gap
+    lastEnd = pos + label.length;
   }
   return cells.join("");
+}
+
+// Cumulative spend/earn line chart → panel lines. The series covers [windowStart, endMs];
+// it's drawn across the fraction of the plot that the data occupies within [windowStart,
+// windowEnd], leaving the rest blank on the right (so a partial 24h shows empty space).
+function renderLineChart(cols: number, series: ChartSeries, ethUsd: number | null, windowStart: number, windowEnd: number): string[] {
+  const w = Math.max(8, cols - 13);
+  const winSpan = windowEnd - windowStart;
+  const dataCols = winSpan > 0 ? Math.max(2, Math.min(w, Math.round((w * (series.endMs - windowStart)) / winSpan))) : w;
+  const spend = fitSeries(series.spendUsd, dataCols);
+  const earn = ethUsd != null ? fitSeries(series.earnedWeth.map((v) => v * ethUsd), dataCols) : null;
+  const seriesArr = earn && earn.length === spend.length ? [spend, earn] : [spend];
+  const colors = seriesArr.length === 2 ? [CHART_SPEND, CHART_EARN] : [CHART_SPEND];
+  const lines = asciichart.plot(seriesArr, { height: 5, colors, format: (x: number) => fmtMoney(x).padEnd(7) }).split("\n");
+  lines.push(dim(adaptiveTimeAxis(LABEL_OFFSET, w, windowStart, windowEnd))); // x-axis spans the full window
+  return lines;
+}
+
+// Vertical stacked bar chart of per-hour spend by type over the last 24h → panel lines.
+// Each of the 24 columns is one hour; within a bar, spend is stacked bottom-up as
+// x-api (cyan) / inference (green) / compute (yellow). Half-block characters double the
+// vertical resolution (each text row = 2 sub-levels via ▀/▄/█ + fg/bg), so even thin
+// segments show. A y-axis shows the max; an x-axis shows the hours below.
+function renderHourlyBars(cols: number, byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[] }): string[] {
+  const N = 24, H = 7, EIGHTH = 8, SUB = H * EIGHTH, labelW = 8, HOUR = 3_600_000;
+  const LOWER = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]; // lower-block fills, 0..8 eighths
+  const plotW = Math.max(N, cols - 4 - labelW);
+  const slot = plotW / N;
+  const totals = Array.from({ length: N }, (_, i) => (byType.xapi[i] ?? 0) + (byType.inference[i] ?? 0) + (byType.compute[i] ?? 0));
+  const max = Math.max(...totals, 1e-9);
+
+  // Per-hour segment heights in SUB-levels (8 per row), bottom→top: x-api, inference,
+  // compute. Rounding is reconciled so the parts sum to the bar's total height.
+  const seg = totals.map((tot, i) => {
+    const tr = Math.round((tot / max) * SUB);
+    let xr = tot > 0 ? Math.round(((byType.xapi[i] ?? 0) / tot) * tr) : 0;
+    let ir = tot > 0 ? Math.round(((byType.inference[i] ?? 0) / tot) * tr) : 0;
+    let cr = tr - xr - ir;
+    if (cr < 0) { ir += cr; cr = 0; if (ir < 0) { xr += ir; ir = 0; } }
+    return { xr, ir, tr };
+  });
+  // RGB of a bar's segment at a given sub-level, or null above the bar.
+  const subColor = (sg: { xr: number; ir: number; tr: number }, sub: number): string | null =>
+    sub < sg.xr ? CAT_RGB.xapi : sub < sg.xr + sg.ir ? CAT_RGB.inference : sub < sg.tr ? CAT_RGB.compute : null;
+  // One text cell covering 8 sub-levels [base, base+8). Filled bottom-up: the bottom color
+  // fills `h1` eighths (foreground of a lower-block glyph); whatever's above (next segment
+  // color, or empty) is the cell background. Resolves single-color, a color boundary, and
+  // the bar's partial top at 1/8 precision.
+  const cellAt = (sg: { xr: number; ir: number; tr: number }, base: number): string => {
+    const c1 = subColor(sg, base);
+    if (!c1) return " ";
+    let h1 = 1;
+    while (h1 < EIGHTH && subColor(sg, base + h1) === c1) h1++;
+    const c2 = h1 < EIGHTH ? subColor(sg, base + h1) : null;
+    return c2 ? `\x1b[38;2;${c1};48;2;${c2}m${LOWER[h1]}\x1b[0m` : `\x1b[38;2;${c1}m${LOWER[h1]}\x1b[0m`;
+  };
+
+  // Each hour is a discrete bar `barW` columns wide, centered in its slot, with a clear gap.
+  const barW = Math.max(1, Math.round(slot * 0.5));
+  const lines: string[] = [];
+  for (let r = 0; r < H; r++) {
+    const base = (H - 1 - r) * EIGHTH; // sub-level at the bottom of this row (0 = chart floor)
+    const row = new Array<string>(plotW).fill(" ");
+    for (let hour = 0; hour < N; hour++) {
+      const ch = cellAt(seg[hour], base);
+      if (ch === " ") continue;
+      const colStart = Math.round(hour * slot + (slot - barW) / 2);
+      for (let w = 0; w < barW && colStart + w < plotW; w++) row[colStart + w] = ch;
+    }
+    // Label every row at its top-edge value (bottom row = $0), flush-left like the line
+    // charts. The scale tracks `max`, so it adapts as spend grows ($1.2k / $3.4m).
+    const ylab = r === H - 1 ? "$0" : fmtMoney((max * (H - r)) / H);
+    lines.push(ylab.padEnd(labelW - 1) + "│" + row.join(""));
+  }
+  lines.push(dim(adaptiveTimeAxis(labelW, plotW, byType.startMs, byType.startMs + N * HOUR)));
+  return lines;
 }
 
 // Reject if a promise hasn't settled within `ms` — used to bound the on-quit backup
@@ -305,9 +429,9 @@ const kv = (label: string, value: string, pad = 9) => dim(label.padEnd(pad)) + v
 function panel(title: string, content: string[], width: number): string[] {
   const inner = width - 4; // "│ " + content + " │"
   const fillLen = Math.max(0, width - 5 - stringWidth(title)); // ╭ ─ " title " ─*fill ╮ (ANSI-aware)
-  const top = accent("┌─") + bold(` ${title} `) + accent("─".repeat(fillLen) + "┐");
-  const bottom = accent("└" + "─".repeat(width - 2) + "┘");
-  const body = content.map((line) => accent("│") + " " + fit(line, inner) + "\x1b[0m " + accent("│"));
+  const top = border("┌─") + bold(` ${title} `) + border("─".repeat(fillLen) + "┐");
+  const bottom = border("└" + "─".repeat(width - 2) + "┘");
+  const body = content.map((line) => border("│") + " " + fit(line, inner) + "\x1b[0m " + border("│"));
   return [top, ...body, bottom];
 }
 
@@ -400,6 +524,8 @@ type State = {
   scroll: number; logRows: number;
   // Pending command awaiting a y/n confirmation in the footer (null = none).
   confirm: { prompt: string; action: () => void } | null;
+  // Which chart panel is shown: 0 = 24h, 1 = all-time, 2 = expenses by category (←/→).
+  chartIndex: number;
 };
 
 // Pad a content array with blank rows so stacked panels share one height.
@@ -543,15 +669,16 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
 
   // SERVER panel
   const sp = state.specs;
-  const statusFn = p?.status === "online" ? green : p?.status && p.status !== "unknown" ? yellow : dim;
   const compute = state.computeHours != null ? `${cyan(fmtDuration(state.computeHours * 3_600_000))} ${dim("remaining")}` : dim("...");
   // CPU/RAM as: <yappr process> | <whole system> of <capacity>.
   const cpuUsage = `${p ? `${p.cpu}%` : dim("...")} ${dim("|")} ${state.sysCpu != null ? `${state.sysCpu}%` : dim("...")} ${dim("of")} ${sp ? sp.cpu + " vCPU" : "?"}`;
   const ramUsage = `${p ? fmtMem(p.mem) : dim("...")} ${dim("|")} ${state.sysMemMb != null ? `${state.sysMemMb}MB` : dim("...")} ${dim("of")} ${sp?.ram ?? "?"}`;
   const diskUsage = `${state.sysDiskUsed ?? dim("...")} ${dim("of")} ${sp?.disk ?? "?"}`;
   const status = p?.status === "online"
-    ? `${green("online")} ${dim("for")} ${fmtDuration(elapsed)}`
-    : statusFn(p?.status ?? "offline");
+    ? `${cyan("online")} ${dim("for")} ${fmtDuration(elapsed)}`
+    : p?.status === "stopped"
+      ? red("stopped")
+      : (p?.status && p.status !== "unknown" ? yellow : dim)(p?.status ?? "offline");
   const serverRows = [
     kv("IP", state.ip, 8),
     kv("OS", sp?.os ?? dim("..."), 8),
@@ -584,7 +711,7 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   const earnedStr = `${green(`${s.earnedWeth.toFixed(4)} WETH`)}${earnedUsd != null ? " " + dim(`(${fmtSpent(earnedUsd)})`) : ""}`;
   out.push(...panel("ACTIVITY", [justify([
     `${String(s.mentions)} ${dim("mentions")}`,
-    `${String(s.replies)} ${dim("tweets")}`,
+    `${String(s.replies)} ${dim("replies")}`,
     `${String(s.llmTurns)} ${dim("llm requests")}`,
     `${earnedStr} ${dim("earned")}`,
     `${red(fmtSpent(s.spentUsd))} ${dim("spent")}`,
@@ -592,34 +719,26 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
     `${red(String(s.errors))} ${dim("errors")}`,
   ], cols - 4)], cols));
 
-  // CHART panel — cumulative spend (red) vs earnings (green) over the last 24h, in USD.
-  // Always shown between ACTIVITY and LOGS (it shrinks LOGS). Until there's data — right
-  // after launch, or while the deployed box still runs a pre-chart engine build — it
-  // shows a placeholder instead of the plot.
-  const chartSpend = s.chart.spendUsd;
-  const chartTitle = `SPEND vs EARNED  ${dim("·")} ${red("spend")} ${dim("/")} ${green("earned")} ${dim("(USD)")}`;
-  if (chartSpend.length >= 2 && chartSpend[chartSpend.length - 1] > 0) {
-    // asciichart's output width = seriesLength + 9 (the y-axis label column). Size the
-    // series to fill the panel: inner (cols-4) − 9 = cols − 13.
-    const w = Math.max(8, cols - 13);
-    const spend = fitSeries(chartSpend, w);
-    const earn = b?.ethUsd != null ? fitSeries(s.chart.earnedWeth.map((v) => v * b.ethUsd!), w) : null;
-    const seriesArr = earn && earn.length === spend.length ? [spend, earn] : [spend];
-    const colors = seriesArr.length === 2 ? [CHART_SPEND, CHART_EARN] : [CHART_SPEND];
-    // Compact axis labels, always ≤7 chars (so the label column stays 9 wide): $1.2k / $3.4m.
-    // Left-aligned (padEnd) so the y-axis sits flush against the box, not indented.
-    const fmtAxis = (x: number) => {
-      const a = Math.abs(x);
-      let t = a >= 1e6 ? (x / 1e6).toFixed(1) + "m" : a >= 1000 ? (x / 1000).toFixed(1) + "k" : a >= 1 ? x.toFixed(0) : x.toFixed(1);
-      if (parseFloat(t) === 0) t = t.replace(/^-/, ""); // drop the "-0.0" negative-zero baseline
-      return ("$" + t).padEnd(7);
-    };
-    const lines = asciichart.plot(seriesArr, { height: 5, colors, format: fmtAxis }).split("\n");
-    lines.push(dim(chartTimeAxis(9, spend.length, s.chart.startMs, s.chart.endMs))); // local-time HH:00 axis
-    out.push(...panel(chartTitle, lines, cols));
+  // CHART panel — three views cycled with ←/→: (0) last 24h, (1) all-time, (2) expenses by
+  // category. Sits between ACTIVITY and LOGS (shrinks LOGS). Line views show a placeholder
+  // until there's data (e.g. while a pre-chart engine build is still deployed).
+  const ci = ((state.chartIndex % 3) + 3) % 3;
+  const nav = dim(`[${ci + 1}/3 ←/→]`);
+  const placeholder = [dim("collecting data… (redeploy if the agent predates this feature)")];
+  const hasData = (c: ChartSeries) => c.spendUsd.length >= 2 && c.endMs > c.startMs;
+  let chartTitle: string;
+  let chartLines: string[];
+  if (ci === 2) {
+    chartTitle = `HOURLY EXPENSES  ${dim("· 24h ·")} ${catColor(CAT_RGB.xapi)("x-api")} ${dim("/")} ${catColor(CAT_RGB.inference)("inference")} ${dim("/")} ${catColor(CAT_RGB.compute)("compute")}  ${nav}`;
+    chartLines = s.chart.byType.startMs > 0 ? renderHourlyBars(cols, s.chart.byType) : placeholder;
+  } else if (ci === 1) {
+    chartTitle = `SPENT vs EARNED  ${dim("· all time ·")} ${red("spent")} ${dim("/")} ${cyan("earned")}  ${nav}`;
+    chartLines = hasData(s.chart.all) ? renderLineChart(cols, s.chart.all, b?.ethUsd ?? null, s.chart.all.startMs, s.chart.all.endMs) : placeholder;
   } else {
-    out.push(...panel(chartTitle, [dim("collecting data… (redeploy if the agent predates the chart feature)")], cols));
+    chartTitle = `SPENT vs EARNED  ${dim("· 24h ·")} ${red("spent")} ${dim("/")} ${cyan("earned")}  ${nav}`;
+    chartLines = hasData(s.chart.day) ? renderLineChart(cols, s.chart.day, b?.ethUsd ?? null, s.chart.day.startMs, s.chart.day.startMs + 24 * HOUR_MS) : placeholder;
   }
+  out.push(...panel(chartTitle, chartLines, cols));
 
   // LOGS panel fills the rest (less one row for the footer), with a scroll offset
   // (0 = following the live tail).
@@ -640,7 +759,7 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   const footer = state.confirm
     ? `${yellow(state.confirm.prompt)}  ${accent("y")}${dim("/")}${accent("Enter")} ${dim("to confirm, any other key cancels")}`
     : [
-        key("up/dn", "scroll"), key("g/G", "top/live"),
+        key("up/dn", "scroll"), key("g/G", "top/live"), key("←/→", "chart"),
         key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"),
         key("q", "quit"),
       ].join(dim("  "));
@@ -681,10 +800,11 @@ export async function runStatus(target: { ip: string; password?: string; handle?
   const interactive = !!process.stdout.isTTY;
   const state: State = {
     ip: target.ip, handle, admins: admins || dim("none"), wallet: null,
-    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0, chart: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 } },
+    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0, spentByType: { "x-api": 0, inference: 0, compute: 0 }, chart: { day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 }, all: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 }, byType: { startMs: 0, xapi: [], inference: [], compute: [] } } },
     logs: [], pm2: null, specs: null, frame: 0, balances: null, computeHours: null,
     creditUsd: null,
     sysCpu: null, sysMemMb: null, sysDiskUsed: null, scroll: 0, logRows: 0, confirm: null,
+    chartIndex: 0,
   };
 
   let renderTimer: NodeJS.Timeout | undefined;
@@ -851,6 +971,8 @@ export async function runStatus(target: { ip: string; password?: string; handle?
         if (s === "s") { state.confirm = { prompt: "Stop yappr?", action: () => void runPm2("stop") }; render(state); return; }
         if (s === "S") { state.confirm = { prompt: "Start yappr?", action: () => void runPm2("start") }; render(state); return; }
         if (s === "d") { state.confirm = { prompt: "Re-deploy yappr? (exits dashboard)", action: redeploy }; render(state); return; }
+        if (s === "\x1b[C") { state.chartIndex = (state.chartIndex + 1) % 3; render(state); return; } // → next chart
+        if (s === "\x1b[D") { state.chartIndex = (state.chartIndex + 2) % 3; render(state); return; } // ← prev chart
         let sc = state.scroll;
         if (s === "\x1b[A" || s === "k") sc += 1;            // up
         else if (s === "\x1b[B" || s === "j") sc -= 1;       // down
@@ -934,7 +1056,8 @@ function demo() {
   const state: State = {
     ip: "203.0.113.7", handle: "evvrbot", admins: "@alice, @bob", wallet: "0xA1b2C3d4E5f6A7b8C9d0E1f2A3b4C5d6E7f80910",
     stats: { mentions: 37, replies: 29, llmTurns: 84, spentUsd: 0.7345, warns: 1, errors: 0, earnedWeth: 0.0512, spentUsdWindow: 96, inferenceUsdWindow: 1.2, earnedWethWindow: 0.004, rateWindowHours: 24,
-      chart: (() => { const sp: number[] = [], ew: number[] = []; let a = 0, b2 = 0; for (let i = 0; i < 60; i++) { a += 0.012; b2 += i > 15 ? 0.0009 : 0; sp.push(a); ew.push(b2); } return { spendUsd: sp, earnedWeth: ew, startMs: Date.now() - 5 * 3_600_000, endMs: Date.now() }; })() },
+      spentByType: { "x-api": 0.55, inference: 0.06, compute: 0.12 },
+      chart: (() => { const sp: number[] = [], ew: number[] = []; let a = 0, b2 = 0; for (let i = 0; i < 60; i++) { a += 0.012; b2 += i > 15 ? 0.0009 : 0; sp.push(a); ew.push(b2); } const day = { spendUsd: sp, earnedWeth: ew, startMs: Date.now() - 5 * 3_600_000, endMs: Date.now() }; const all = { spendUsd: sp, earnedWeth: ew, startMs: Date.now() - 40 * 86_400_000, endMs: Date.now() }; const x: number[] = [], inf: number[] = [], c: number[] = []; for (let i = 0; i < 24; i++) { x.push(i >= 12 ? 0.02 + (i % 3) * 0.005 : 0); inf.push(i >= 12 ? 0.003 : 0); c.push(i === 18 ? 0.06 : 0); } const byType = { startMs: Date.now() - 23 * 3_600_000, xapi: x, inference: inf, compute: c }; return { day, all, byType }; })() },
     pm2: { status: "online", bootMs: Date.now() - 8_120_000, restarts: 2, mem: 149 * 1024 * 1024, cpu: 3 },
     specs: { cpu: "2", ram: "1.9Gi", disk: "25G", os: "Ubuntu 24.04.1 LTS" },
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
@@ -943,6 +1066,7 @@ function demo() {
     sysCpu: 3, sysMemMb: 600, sysDiskUsed: "12G",
     scroll: 0, logRows: 0,
     confirm: null,
+    chartIndex: 0,
     frame: 0,
     logs: [
       "[2026-06-08 12:30:01] INFO: poll cycle start",
@@ -962,11 +1086,11 @@ function check(cols = 143, rows = 40) {
   const long = String.raw`[2026-06-08 15:21:32] INFO: x-api GET /tweets/mentions {"path":"/tweets/mentions","params":{"auth_token":"[redacted]","ct0":"[redacted]"}}`;
   const state: State = {
     ip: "95.179.144.82", handle: "evvrbot", admins: "@alexben0006", wallet: "0xe6440ce076a5b491e7d6378223517d60a96b1326",
-    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, spentUsdWindow: 12, inferenceUsdWindow: 1, earnedWethWindow: 0.001, rateWindowHours: 24, chart: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.2), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.00005), startMs: Date.now() - 24 * 3_600_000, endMs: Date.now() } },
+    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, spentUsdWindow: 12, inferenceUsdWindow: 1, earnedWethWindow: 0.001, rateWindowHours: 24, spentByType: { "x-api": 8, inference: 1, compute: 3 }, chart: { day: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.2), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.00005), startMs: Date.now() - 24 * 3_600_000, endMs: Date.now() }, all: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.5), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.0001), startMs: Date.now() - 40 * 86_400_000, endMs: Date.now() }, byType: { startMs: Date.now() - 23 * 3_600_000, xapi: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.02 : 0), inference: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.003 : 0), compute: Array.from({ length: 24 }, (_, i) => i === 16 ? 0.05 : 0) } } },
     pm2: { status: "online", bootMs: Date.now() - 945_000, restarts: 1, mem: 110 * 1024 * 1024, cpu: 0.4 },
     specs: { cpu: "1", ram: "951Mi", disk: "23G", os: "Ubuntu 22.04.5 LTS" }, frame: 0, scroll: 0, logRows: 0,
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
-    computeHours: 19.5, creditUsd: 4.21, sysCpu: 4, sysMemMb: 740, sysDiskUsed: "9.1G", confirm: null,
+    computeHours: 19.5, creditUsd: 4.21, sysCpu: 4, sysMemMb: 740, sysDiskUsed: "9.1G", confirm: null, chartIndex: 0,
     logs: Array.from({ length: 30 }, () => long),
   };
   const frame = buildFrame(state, cols, rows);

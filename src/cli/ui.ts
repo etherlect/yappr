@@ -9,6 +9,7 @@ export const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
 export const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
 export const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
 export const accent = (s: string) => `\x1b[38;2;215;119;87m${s}\x1b[0m`; // coral
+export const border = (s: string) => `\x1b[38;2;15;249;145m${s}\x1b[0m`; // box borders — logo green (#0ff991)
 
 export const YAPPR_ART = [
   "██╗   ██╗ █████╗ ██████╗ ██████╗ ██████╗ ",

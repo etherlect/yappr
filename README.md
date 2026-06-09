@@ -146,7 +146,7 @@ A treasury cycle runs once on every startup, then every hour after that. Each cy
 2. **Pays the dev fee** (optional) — sends `DEV_TOKEN_BPS`% of claimed token and `DEV_WETH_BPS`% of claimed WETH to `DEV_ADDRESS`. Both default to `0`. Constraint: `BURN_BPS + DEV_TOKEN_BPS ≤ 10000`.
 3. **Burns** 50% of token fees (configurable via `BURN_BPS`; set to `0` to disable)
 4. **Swaps** remaining WETH fees → USDC via Uniswap v3 on Base
-5. **Extends** compute by 1 hour via x402layer (paying from USDC balance)
+5. **Extends** compute by 24h when less than 24h remains, via x402layer (paying from USDC balance)
 
 **LLM credits** are seeded ($5) and auto top-up is enabled by the deploy script. The treasury keeps USDC in the wallet; Bankr replenishes credits automatically when they drop below $1 — no manual intervention needed.
 

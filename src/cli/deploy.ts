@@ -676,7 +676,7 @@ async function main() {
     }
 
     const remainingHours = remainingComputeHours(instance);
-    if (remainingHours !== null && remainingHours >= 12) {
+    if (remainingHours !== null && remainingHours >= 24) {
       ok(`Compute has ${remainingHours.toFixed(1)}h remaining; skipping compute purchase`);
 
       // ── Step 5: compute ready ─────────────────────────────────────────────
@@ -780,7 +780,7 @@ async function main() {
     info(`OS:       ${ubuntu?.name ?? "Ubuntu"}`);
     info(`Cost:     1 day prepaid (${dailyCost} via x402 on Base)`);
     info("");
-    info("After deployment the agent self-extends compute when < 12h remain.");
+    info("After deployment the agent self-extends compute when < 24h remain.");
 
     if (!await confirm(`Provision VPS (${dailyCost} paid via x402 from your Bankr wallet)?`, true)) {
       console.log("  Aborted.");
@@ -988,7 +988,7 @@ async function main() {
   for (const line of [
     `Poll for @${handle} mentions every 20s`,
     "Reply via Bankr LLM Gateway",
-    "Self-extend compute when < 12h remain",
+    "Self-extend compute when < 24h remain",
     "Auto top-up LLM credits when balance < $1",
   ]) console.log(`    ${accent("·")}  ${dim(line)}`);
   console.log("");

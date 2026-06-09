@@ -144,7 +144,7 @@ export async function runTreasuryCycle(treasury: Treasury, log: Logger): Promise
         log.warn("could not determine compute expiry — skipping extension to avoid an unintended purchase");
       } else {
         const hoursRemaining = (expiry.getTime() - Date.now()) / (1000 * 60 * 60);
-        if (hoursRemaining < 12) {
+        if (hoursRemaining < 24) {
           await treasury.extendCompute();
           result.computeExtended = true;
           log.info({ hoursRemaining: hoursRemaining.toFixed(1) }, "compute extended (+24h)");
