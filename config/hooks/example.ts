@@ -1,4 +1,4 @@
-import type { AgentHooks } from "../../src/hooks/types.js";
+import type { AgentHooks } from "yappr";
 
 export const hooks: AgentHooks = {
   // onMention: async (tweet) => {

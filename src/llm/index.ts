@@ -19,16 +19,22 @@ let _prompts: Prompts | null = null;
 // /v1/models, so we can cost every request exactly and record it as inference spend —
 // far more precise than inferring spend from credit-balance jumps.
 
+// One base URL for the whole gateway client — pricing AND completions, so a
+// BANKR_LLM_URL override can't price from one gateway while chatting with another.
+const LLM_URL = process.env.BANKR_LLM_URL || "https://llm.bankr.bot";
+// Bound on a single completion call, so a hung gateway request can't stall a
+// mention's reply pipeline forever.
+const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 120_000;
+
 type ModelPricing = { input: number; output: number; cacheRead: number };
 
 let _pricing: ModelPricing | null = null;
 let _pricingInFlight: Promise<ModelPricing | null> | null = null;
 
 async function fetchModelPricing(): Promise<ModelPricing | null> {
-  const url = process.env.BANKR_LLM_URL || "https://llm.bankr.bot";
   const key = process.env.BANKR_LLM_KEY || config.bankrApiKey;
   try {
-    const res = await fetch(`${url}/v1/models`, {
+    const res = await fetch(`${LLM_URL}/v1/models`, {
       headers: { "X-API-Key": key, "User-Agent": "yappr/0.1" },
       signal: AbortSignal.timeout(10_000),
     });
@@ -95,12 +101,13 @@ export async function chat(
     { model: config.llmModel, jsonMode: opts.jsonMode ?? false },
     `LLM request (${messages.length} messages):\n\n${rendered}\n`,
   );
-  const res = await fetch("https://llm.bankr.bot/v1/chat/completions", {
+  const res = await fetch(`${LLM_URL}/v1/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${config.bankrApiKey}`,
       "Content-Type": "application/json",
     },
+    signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
     body: JSON.stringify({
       model: config.llmModel,
       messages,

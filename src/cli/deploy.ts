@@ -1,7 +1,7 @@
 // Provision + deploy yappr to an x402 compute instance (the `yappr deploy` command).
 
 import "dotenv/config";
-import { readFile, writeFile, copyFile, access, mkdtemp } from "node:fs/promises";
+import { readFile, writeFile, copyFile, access, mkdtemp, rm } from "node:fs/promises";
 import { resolve, join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -29,6 +29,7 @@ import { registerExactEvmScheme } from "@x402/evm/exact/client";
 import { dim, bold, green, yellow, red, accent, YAPPR_ART } from "./ui.js";
 import { runStatus } from "./status.js";
 import { latestLocalBackup, remoteFileExists, backupLabel, REMOTE_DB_PATH } from "./backup.js";
+import { hostKeyConfig } from "./host-key.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -96,20 +97,40 @@ function isUnset(value: string | undefined): boolean {
   return !value || /^(bk_|0x)?\.\.\.$/.test(value) || value === "...";
 }
 
+// Quote a value so dotenv reads it back verbatim: unquoted values are trimmed and
+// truncated at an inline " #" — fatal for generated secrets like the one-time SSH
+// password, which can't be re-fetched. Plain values stay unquoted.
+function quoteEnvValue(value: string): string {
+  if (!/[#'"\s]/.test(value)) return value;
+  if (!value.includes("'")) return `'${value}'`;
+  if (!value.includes('"')) return `"${value}"`;
+  return value; // contains both quote kinds — leave as-is rather than corrupt it
+}
+
 function setEnvVarInContent(content: string, key: string, value: string): string {
-  const line = `${key}=${value}`;
+  const line = `${key}=${quoteEnvValue(value)}`;
+
+  // The replacements below MUST use a function: a plain replacement string would
+  // have its `$`-sequences ($&, $', $1, …) expanded by String.replace, silently
+  // mangling any value (passwords!) that contains them.
 
   // Existing uncommented assignment — overwrite in place.
   const active = new RegExp(`^${key}=.*$`, "m");
-  if (active.test(content)) return content.replace(active, line);
+  if (active.test(content)) return content.replace(active, () => line);
 
   // Commented placeholder (e.g. "# KEY=" or "#KEY=...") — uncomment in place
   // so the file stays clean instead of growing a duplicate at the bottom.
   const commented = new RegExp(`^#\\s*${key}=.*$`, "m");
-  if (commented.test(content)) return content.replace(commented, line);
+  if (commented.test(content)) return content.replace(commented, () => line);
 
   if (!content) return `${line}\n`;
   return content.endsWith("\n") ? `${content}${line}\n` : `${content}\n${line}\n`;
+}
+
+// Drop every assignment of `key` — used to keep credentials the server has no use
+// for (its own root password) out of the uploaded .env.
+function removeEnvVarInContent(content: string, key: string): string {
+  return content.replace(new RegExp(`^${key}=.*\\n?`, "gm"), "");
 }
 
 async function setEnvVar(envPath: string, key: string, value: string): Promise<void> {
@@ -878,7 +899,7 @@ async function main() {
   await spin("Waiting for SSH on port 22…", () => waitForPort(ip, 22, 120_000), "SSH port open");
 
   const ssh = new NodeSSH();
-  await spin("Connecting via SSH…", () => ssh.connect({ host: ip, username: "root", password: sshPassword }), `Connected to ${ip}`);
+  await spin("Connecting via SSH…", () => ssh.connect({ host: ip, username: "root", password: sshPassword, ...hostKeyConfig(ip) }), `Connected to ${ip}`);
 
   // Bundle the local engine into a tarball (the server installs that exact build).
   const tarball = await spin("Bundling engine…", () => bundleEngine(), "Engine bundled");
@@ -891,34 +912,50 @@ async function main() {
     // The engine tarball + a minimal package.json that installs it.
     const tarName = basename(tarball);
     await ssh.putFile(tarball, `/yappr/${tarName}`);
-    const serverPkg = { name: "yappr-instance", private: true, type: "module", dependencies: { yappr: `file:./${tarName}` } };
-    const pkgTmp = resolve("/tmp", `yappr-server-pkg-${Date.now()}.json`);
-    await writeFile(pkgTmp, JSON.stringify(serverPkg, null, 2));
-    await ssh.putFile(pkgTmp, "/yappr/package.json");
 
-    // The instance's config (the user's add-ons) — skip hidden junk.
-    const uploaded = await ssh.putDirectory(join(process.cwd(), "config"), "/yappr/config", {
-      recursive: true,
-      concurrency: 8,
-      validate: (p) => !basename(p).startsWith("."),
-    });
-    if (!uploaded) throw new Error("Failed to upload config/ to /yappr");
+    // Private staging dir (0700) for generated files — the env copy below holds
+    // every credential, so it must never sit world-readable in /tmp. Always
+    // removed, even when the upload fails.
+    const stageDir = await mkdtemp(join(tmpdir(), "yappr-deploy-"));
+    try {
+      const serverPkg = { name: "yappr-instance", private: true, type: "module", dependencies: { yappr: `file:./${tarName}` } };
+      const pkgTmp = join(stageDir, "package.json");
+      await writeFile(pkgTmp, JSON.stringify(serverPkg, null, 2));
+      await ssh.putFile(pkgTmp, "/yappr/package.json");
 
-    const cloudEnvPath = resolve("/tmp", `yappr-cloud-${Date.now()}.env`);
-    const localEnv = await readFile(envPath, "utf8");
-    let cloudEnv = setEnvVarInContent(localEnv, "CLOUD_INSTANCE", "true");
-    cloudEnv = setEnvVarInContent(cloudEnv, "DB_PATH", "/var/lib/yappr/yappr.db");
-    await writeFile(cloudEnvPath, cloudEnv);
-    await ssh.putFile(cloudEnvPath, "/yappr/.env");
+      // The instance's config (the user's add-ons) — skip hidden junk.
+      const uploaded = await ssh.putDirectory(join(process.cwd(), "config"), "/yappr/config", {
+        recursive: true,
+        concurrency: 8,
+        validate: (p) => !basename(p).startsWith("."),
+      });
+      if (!uploaded) throw new Error("Failed to upload config/ to /yappr");
+
+      // The uploaded .env carries everything the agent needs — minus the box's own
+      // root password, which the server has no use for. 0600 locally and remotely
+      // (SFTP would otherwise land it 0644, readable by any non-root user).
+      const cloudEnvPath = join(stageDir, "cloud.env");
+      const localEnv = await readFile(envPath, "utf8");
+      let cloudEnv = setEnvVarInContent(localEnv, "CLOUD_INSTANCE", "true");
+      cloudEnv = setEnvVarInContent(cloudEnv, "DB_PATH", "/var/lib/yappr/yappr.db");
+      cloudEnv = removeEnvVarInContent(cloudEnv, "COMPUTE_SSH_PASSWORD");
+      await writeFile(cloudEnvPath, cloudEnv, { mode: 0o600 });
+      await ssh.putFile(cloudEnvPath, "/yappr/.env");
+      await sshExec(ssh, "chmod 600 /yappr/.env", { quiet: true });
+    } finally {
+      await rm(stageDir, { recursive: true, force: true });
+    }
   }, "Uploaded");
 
   // Each step is a separate SSH command (the shell resets to / between calls, so
   // commands that need the project dir cd into /yappr themselves).
 
   // Node.js: only show the install spinner when it's actually missing or too old.
+  // The floor is 20 — better-sqlite3@12 (a native dep) doesn't support older majors,
+  // so accepting e.g. a pre-existing Node 18 would fail later, at `npm install`.
   const nodeMajor = await sshNodeMajor(ssh);
-  if (nodeMajor !== null && nodeMajor >= 18) {
-    ok("Node.js already installed");
+  if (nodeMajor !== null && nodeMajor >= 20) {
+    ok(`Node.js already installed (v${nodeMajor})`);
   } else {
     await spin("Installing Node.js…",
       () => sshExec(ssh, "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs", { quiet: true }),

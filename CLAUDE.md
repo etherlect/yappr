@@ -60,8 +60,11 @@ logs) and derives three health metrics from the ledger + live on-chain balances:
 for inference — whichever empties first; cold-start and a downtime floor use the
 poll-cadence cost), **Sustainable** (window earnings ≥ window spend) and **Profitable**
 (all-time earnings − spend). The trailing-window figures come from `summary()`, which
-also returns a `chart` series (cumulative spend/earn over 24h) that an always-on
-`asciichart` line chart plots between ACTIVITY and LOGS.
+also returns `chart` series — cumulative spend/earn over the last 24h (`day`) and
+all-time (`all`), plus per-hour spend by category (`byType`, 24 clock-aligned buckets) —
+feeding an always-on CHART panel between ACTIVITY and LOGS with four views cycled by
+←/→: hourly spent-vs-earned bars, hourly expenses by category (stacked bars), and
+all-time / 24h spent-vs-earned line charts (`asciichart`).
 
 While open, the dashboard snapshots the server DB into `instance/backups/yappr-<date>.db`
 (one file per day, rolling 7) via `cli/backup.ts` — SQLite `VACUUM INTO` over SSH
@@ -81,7 +84,7 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
 | `config.ts` | Validated view of all env vars (the only place that reads `process.env`) |
 | `bankr.ts` | Single client for the Bankr REST API (sign, x402-pay, wallet) |
 | `wallet.ts` | Wallet init + `payFetch` (x402-billed fetch) + `submitTx` |
-| `x402.ts` | x402 scheme wiring — used by the CLI (`src/cli/`); the agent pays via `bankr.ts` |
+| `x402.ts` | x402 scheme wiring: a client-side x402 fetch whose EIP-3009 payment authorizations are signed via Bankr `/wallet/sign` — backs the agent's `payFetch` (`wallet.ts`) and the CLI |
 | `compute.ts` | x402 Compute API client — used by the CLI (`deploy`/`status`/`ssh`) |
 | `agent-prompt.ts` | Bankr natural-language agent jobs — used by the `wallet` skill |
 | `llm/` | LLM gateway client + prompt assembly from `config/context/`. Costs each completion from its token usage × per-model `/v1/models` pricing → records inference spend. The system-prompt date is hour-granular so the prompt stays prompt-cacheable across calls |
@@ -92,7 +95,7 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
 | `x/` | Full X/Twitter SDK over the x402 data endpoint (`client.ts`) + types |
 | `db.ts` | The one shared SQLite connection (`better-sqlite3`) → app DB `yappr.db` at `DB_PATH` (persisted outside `/yappr` on the server). Each feature creates its own tables against it |
 | `state.ts` | Durable agent state in the shared DB's `state` table: last mention processed |
-| `stats.ts` | Stats ledger on the shared DB: spend/earn/activity `events` + `meta` gauges + `summary()` (also returns trailing-window spend/earn for the dashboard's runway estimate). Inference spend is costed per-request in `llm/index.ts`. `stats-cli.ts` is its CLI (`summary` \| `backup`), used by the status dashboard over SSH |
+| `stats.ts` | Stats ledger on the shared DB: spend/earn/activity `events` + `meta` gauges + `summary()` (also returns trailing-window spend/earn for the dashboard's runway estimate, and the `chart` series — `day`/`all` cumulative + `byType` hourly — for the CHART panel). Inference spend is costed per-request in `llm/index.ts`. `stats-cli.ts` is its CLI (`summary` \| `backup`), used by the status dashboard over SSH |
 | `util.ts`, `log.ts` | `sleep`/`requireEnv`, and the pino logger |
 
 ## Conventions

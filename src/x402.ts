@@ -3,7 +3,7 @@ import { registerExactEvmScheme } from "@x402/evm/exact/client";
 import { bankrSignTypedData } from "./bankr.js";
 
 // Config-free x402/Bankr wiring shared by the running agent (src/wallet.ts) and
-// the one-shot deploy script (scripts/deploy.ts). Keep this module free of any
+// the deploy command (src/cli/deploy.ts). Keep this module free of any
 // config/env imports so deploy can use it before its own env validation runs.
 
 export type Signer = {

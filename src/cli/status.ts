@@ -28,6 +28,7 @@ import {
 import * as asciichart from "asciichart";
 import { dim, bold, green, yellow, red, cyan, accent, border, YAPPR_LOGO } from "./ui.js";
 import { backupRemoteDb, backupLabel } from "./backup.js";
+import { hostKeyConfig } from "./host-key.js";
 
 // Chart line colors (raw ANSI, fed to asciichart). Spend = 16-color red; earned = the
 // same truecolor green the rest of the TUI uses (the 16-color green renders salmon on
@@ -38,19 +39,26 @@ import { backupRemoteDb, backupLabel } from "./backup.js";
 const SPENT_RGB = "224;71;71", EARN_RGB = "0;188;212";
 const CHART_SPEND = `\x1b[38;2;${SPENT_RGB}m`;
 const CHART_EARN = `\x1b[38;2;${EARN_RGB}m`; // cyan, matching the "earned" legend
+// Numeric env var with a fallback that also covers malformed values — a NaN here
+// would otherwise break the charts or turn an interval into a ~1ms hot loop.
+function numEnv(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && process.env[name] !== "" ? n : fallback;
+}
+
 // Plot rows for the spent/earned line charts. asciichart draws height+1 rows, so 8 → 9
 // rows + 1 axis = 10 content lines, matching the hourly bar chart (H=9 bars + 1 axis).
 // Override with STATUS_CHART_HEIGHT. (1-decimal y labels keep the rows distinct.)
-const LINE_CHART_HEIGHT = Math.max(3, Number(process.env.STATUS_CHART_HEIGHT || 8));
+const LINE_CHART_HEIGHT = Math.max(3, numEnv("STATUS_CHART_HEIGHT", 8));
 
 // Expense-category colors as truecolor RGB triples (so they're stable across themes and
 // usable as a half-block cell background). Shared by the bar chart and its legend.
 const CAT_RGB = { xapi: "0;188;212", inference: "215;119;87", compute: "234;179;8" } as const;
 const catColor = (rgb: string) => (s: string) => `\x1b[38;2;${rgb}m${s}\x1b[0m`;
 
-const TREASURY_INTERVAL_MS = Number(process.env.TREASURY_INTERVAL_MS || 3_600_000);
+const TREASURY_INTERVAL_MS = numEnv("TREASURY_INTERVAL_MS", 3_600_000);
 // How often the dashboard pulls a DB snapshot into instance/backups/ (default 20 min).
-const BACKUP_INTERVAL_MS = Number(process.env.STATUS_BACKUP_INTERVAL_MS || 1_200_000);
+const BACKUP_INTERVAL_MS = numEnv("STATUS_BACKUP_INTERVAL_MS", 1_200_000);
 
 // Runway model. Below this many hours of recorded activity the measured burn rate is
 // too noisy to trust, so we fall back to a predicted floor from the poll cadence.
@@ -60,9 +68,9 @@ const RUNWAY_MIN_DATA_HOURS = 1;
 // once the measured window takes over.
 const X_API_POLL_COST_USD = 0.005;
 const POLL_METHOD = (process.env.POLL_METHOD || "search").toLowerCase();
-const POLL_SECONDS = Math.round(Number(process.env.POLL_INTERVAL_MS || 20_000) / 1000);
+const POLL_SECONDS = Math.round(numEnv("POLL_INTERVAL_MS", 20_000) / 1000);
 // Treasury balances + remaining compute refresh on this cadence (default 5 min).
-const BALANCE_INTERVAL_MS = Number(process.env.STATUS_BALANCE_INTERVAL_MS || 300_000);
+const BALANCE_INTERVAL_MS = numEnv("STATUS_BALANCE_INTERVAL_MS", 300_000);
 
 // Bankr LLM Gateway (inference credits). Read only to display the live balance (the
 // remaining inference budget); the agent owns inference *spend* tracking, costed
@@ -302,37 +310,47 @@ function renderLineChart(cols: number, series: ChartSeries, ethUsd: number | nul
   return lines;
 }
 
-// Vertical stacked bar chart of per-hour spend by type over the last 24h → panel lines.
-// Each of the 24 columns is one hour; within a bar, spend is stacked bottom-up as
-// x-api (cyan) / inference (green) / compute (yellow). Half-block characters double the
-// vertical resolution (each text row = 2 sub-levels via ▀/▄/█ + fg/bg), so even thin
-// segments show. A y-axis shows the max; an x-axis shows the hours below.
-function renderHourlyBars(cols: number, byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[] }): string[] {
+// Generic stacked vertical bar chart over the 24 hourly buckets → panel lines.
+// One discrete bar per hour, its segments stacked bottom-up in layer order
+// (`layers`, each a values series + RGB). Half-block characters double the
+// vertical resolution (each text row = 8 sub-levels via ▁..█ + fg/bg), so even
+// thin segments show. A y-axis shows the max; an x-axis shows the hours below.
+// Backs both the per-category expenses chart and the spent-vs-earned chart.
+function renderStackedBars(cols: number, startMs: number, layers: Array<{ values: number[]; rgb: string }>): string[] {
   const N = 24, H = 9, EIGHTH = 8, SUB = H * EIGHTH, labelW = 8, HOUR = 3_600_000;
   const LOWER = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]; // lower-block fills, 0..8 eighths
   const plotW = Math.max(N, cols - 4 - labelW);
   const slot = plotW / N;
-  const totals = Array.from({ length: N }, (_, i) => (byType.xapi[i] ?? 0) + (byType.inference[i] ?? 0) + (byType.compute[i] ?? 0));
+  const totals = Array.from({ length: N }, (_, i) => layers.reduce((sum, l) => sum + (l.values[i] ?? 0), 0));
   const max = Math.max(...totals, 1e-9);
 
-  // Per-hour segment heights in SUB-levels (8 per row), bottom→top: x-api, inference,
-  // compute. Rounding is reconciled so the parts sum to the bar's total height.
+  // Per-hour segment heights in SUB-levels (8 per row), bottom→top in layer order.
+  // Rounding is reconciled so the parts sum to the bar's total height: the last
+  // layer takes the remainder, and any negative remainder eats into lower layers.
   const seg = totals.map((tot, i) => {
     const tr = Math.round((tot / max) * SUB);
-    let xr = tot > 0 ? Math.round(((byType.xapi[i] ?? 0) / tot) * tr) : 0;
-    let ir = tot > 0 ? Math.round(((byType.inference[i] ?? 0) / tot) * tr) : 0;
-    let cr = tr - xr - ir;
-    if (cr < 0) { ir += cr; cr = 0; if (ir < 0) { xr += ir; ir = 0; } }
-    return { xr, ir, tr };
+    const parts = layers.map((l, k) =>
+      k === layers.length - 1 ? 0 : tot > 0 ? Math.round(((l.values[i] ?? 0) / tot) * tr) : 0);
+    parts[parts.length - 1] = tr - parts.reduce((a, b) => a + b, 0);
+    for (let k = parts.length - 1; k > 0; k--) {
+      if (parts[k] < 0) { parts[k - 1] += parts[k]; parts[k] = 0; }
+    }
+    // Cumulative top boundary of each layer, so subColor is a simple scan.
+    const bounds: number[] = [];
+    parts.reduce((acc, p) => { bounds.push(acc + p); return acc + p; }, 0);
+    return { bounds, tr };
   });
   // RGB of a bar's segment at a given sub-level, or null above the bar.
-  const subColor = (sg: { xr: number; ir: number; tr: number }, sub: number): string | null =>
-    sub < sg.xr ? CAT_RGB.xapi : sub < sg.xr + sg.ir ? CAT_RGB.inference : sub < sg.tr ? CAT_RGB.compute : null;
+  const subColor = (sg: { bounds: number[]; tr: number }, sub: number): string | null => {
+    if (sub >= sg.tr) return null;
+    for (let k = 0; k < sg.bounds.length; k++) if (sub < sg.bounds[k]) return layers[k].rgb;
+    return null;
+  };
   // One text cell covering 8 sub-levels [base, base+8). Filled bottom-up: the bottom color
   // fills `h1` eighths (foreground of a lower-block glyph); whatever's above (next segment
   // color, or empty) is the cell background. Resolves single-color, a color boundary, and
   // the bar's partial top at 1/8 precision.
-  const cellAt = (sg: { xr: number; ir: number; tr: number }, base: number): string => {
+  const cellAt = (sg: { bounds: number[]; tr: number }, base: number): string => {
     const c1 = subColor(sg, base);
     if (!c1) return " ";
     let h1 = 1;
@@ -358,56 +376,29 @@ function renderHourlyBars(cols: number, byType: { startMs: number; xapi: number[
     const ylab = r === H - 1 ? "$0" : fmtMoney((max * (H - r)) / H);
     lines.push(ylab.padEnd(labelW - 1) + "│" + row.join(""));
   }
-  lines.push(dim(adaptiveTimeAxis(labelW, plotW, byType.startMs, byType.startMs + N * HOUR)));
+  lines.push(dim(adaptiveTimeAxis(labelW, plotW, startMs, startMs + N * HOUR)));
   return lines;
 }
 
-// Stacked vertical bars of per-hour spent (red) vs earned (cyan) over the last 24h — ONE
-// bar per hour like the expenses chart: spent on the bottom, earned stacked on top, total
-// height = spent + earned (USD). Eighth-block heights, two-color boundary cell via fg/bg.
+// Per-hour spend stacked by type: x-api / inference / compute, bottom-up.
+function renderHourlyBars(cols: number, byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[] }): string[] {
+  return renderStackedBars(cols, byType.startMs, [
+    { values: byType.xapi, rgb: CAT_RGB.xapi },
+    { values: byType.inference, rgb: CAT_RGB.inference },
+    { values: byType.compute, rgb: CAT_RGB.compute },
+  ]);
+}
+
+// Per-hour spent (red, bottom) vs earned (cyan, stacked on top), both in USD —
+// earned is the WETH series converted at the live ETH price.
 function renderHourlySpentEarned(cols: number, d: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; earned: number[] }, ethUsd: number | null): string[] {
-  const N = 24, H = 9, EIGHTH = 8, SUB = H * EIGHTH, labelW = 8, HOUR = 3_600_000;
-  const LOWER = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-  const plotW = Math.max(N, cols - 4 - labelW);
-  const slot = plotW / N;
+  const N = 24;
   const spent = Array.from({ length: N }, (_, i) => (d.xapi[i] ?? 0) + (d.inference[i] ?? 0) + (d.compute[i] ?? 0));
   const earned = Array.from({ length: N }, (_, i) => (d.earned[i] ?? 0) * (ethUsd ?? 0));
-  const totals = spent.map((s, i) => s + earned[i]);
-  const max = Math.max(...totals, 1e-9);
-  // Per-hour heights in sub-levels: spent fills [0, sr), earned fills [sr, tr).
-  const seg = totals.map((tot, i) => {
-    const tr = Math.round((tot / max) * SUB);
-    let sr = tot > 0 ? Math.round((spent[i] / tot) * tr) : 0;
-    if (sr > tr) sr = tr;
-    return { sr, tr };
-  });
-  const subColor = (sg: { sr: number; tr: number }, sub: number): string | null =>
-    sub < sg.sr ? SPENT_RGB : sub < sg.tr ? EARN_RGB : null;
-  // One eighth-resolution cell: bottom color fills `h1` eighths (fg), the color above is bg.
-  const cellAt = (sg: { sr: number; tr: number }, base: number): string => {
-    const c1 = subColor(sg, base);
-    if (!c1) return " ";
-    let h1 = 1;
-    while (h1 < EIGHTH && subColor(sg, base + h1) === c1) h1++;
-    const c2 = h1 < EIGHTH ? subColor(sg, base + h1) : null;
-    return c2 ? `\x1b[38;2;${c1};48;2;${c2}m${LOWER[h1]}\x1b[0m` : `\x1b[38;2;${c1}m${LOWER[h1]}\x1b[0m`;
-  };
-  const barW = Math.max(1, Math.round(slot * 0.5));
-  const lines: string[] = [];
-  for (let r = 0; r < H; r++) {
-    const base = (H - 1 - r) * EIGHTH;
-    const row = new Array<string>(plotW).fill(" ");
-    for (let h = 0; h < N; h++) {
-      const ch = cellAt(seg[h], base);
-      if (ch === " ") continue;
-      const colStart = Math.round(h * slot + (slot - barW) / 2);
-      for (let w = 0; w < barW && colStart + w < plotW; w++) row[colStart + w] = ch;
-    }
-    const ylab = r === H - 1 ? "$0" : fmtMoney((max * (H - r)) / H);
-    lines.push(ylab.padEnd(labelW - 1) + "│" + row.join(""));
-  }
-  lines.push(dim(adaptiveTimeAxis(labelW, plotW, d.startMs, d.startMs + N * HOUR)));
-  return lines;
+  return renderStackedBars(cols, d.startMs, [
+    { values: spent, rgb: SPENT_RGB },
+    { values: earned, rgb: EARN_RGB },
+  ]);
 }
 
 // Reject if a promise hasn't settled within `ms` — used to bound the on-quit backup
@@ -572,7 +563,7 @@ async function fetchSysUsage(ssh: NodeSSH): Promise<{ cpu: number | null; memMb:
 
 type State = {
   ip: string; handle: string; admins: string; wallet: string | null;
-  stats: Stats; logs: string[]; pm2: Pm2 | null; specs: Specs | null; frame: number;
+  stats: Stats; logs: string[]; pm2: Pm2 | null; specs: Specs | null;
   balances: Balances | null; computeHours: number | null;
   // Current LLM credit balance (USD) — the inference budget, shown in TREASURY.
   creditUsd: number | null;
@@ -583,7 +574,8 @@ type State = {
   scroll: number; logRows: number;
   // Pending command awaiting a y/n confirmation in the footer (null = none).
   confirm: { prompt: string; action: () => void } | null;
-  // Which chart panel is shown: 0 = 24h, 1 = all-time, 2 = expenses by category (←/→).
+  // Which chart panel is shown (←/→): 0 = spent/earned 24h, 1 = hourly spent vs
+  // earned, 2 = hourly expenses by category, 3 = spent/earned all-time.
   chartIndex: number;
 };
 
@@ -613,6 +605,9 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   // AGENT panel
   const p = state.pm2;
   const elapsed = p?.bootMs ? Date.now() - p.bootMs : 0;
+  // Approximate: phase-aligned to the pm2 process start, but the agent's recurring
+  // treasury timer actually starts a few seconds into boot (and an extra startup
+  // cycle fires ~10s in) — hence the "~" where this renders.
   const nextTreasury = p?.bootMs ? TREASURY_INTERVAL_MS - (elapsed % TREASURY_INTERVAL_MS) : 0;
   const wallet = state.wallet ? `${state.wallet.slice(0, 6)}..${state.wallet.slice(-4)}` : (process.env.BANKR_API_KEY ? dim("resolving") : dim("-"));
 
@@ -685,7 +680,7 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
     kv("Admins", state.admins, 7),
     kv("Wallet", wallet, 7),
     kv("Poll", `${POLL_METHOD} ${dim("|")} ${POLL_SECONDS}s`, 7),
-    kv("Claim", p?.bootMs ? `in ${cyan(fmtDuration(nextTreasury))}` : dim("-"), 7),
+    kv("Claim", p?.bootMs ? `in ${cyan("~" + fmtDuration(nextTreasury))}` : dim("-"), 7),
     kv("Runway", runway, 7),
     kv("Sustainable", sustainable, 12),
     kv("Profitable", profitable, 12),
@@ -790,14 +785,19 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   const nav = dim(`[${ci + 1}/4 ←/→]`);
   const placeholder = [dim("collecting data… (redeploy if the agent predates this feature)")];
   const hasData = (c: ChartSeries) => c.spendUsd.length >= 2 && c.endMs > c.startMs;
+  // The hourly views need a real signal, not just a fetched series: byType.startMs
+  // is always set once the summary arrives, so gate on any nonzero bucket instead.
+  const hasHourly = s.chart.byType.startMs > 0 &&
+    [s.chart.byType.xapi, s.chart.byType.inference, s.chart.byType.compute, s.chart.byType.earned]
+      .some((a) => a.some((v) => v > 0));
   let chartTitle: string;
   let chartLines: string[];
   if (ci === 1) {
     chartTitle = `HOURLY SPENT vs EARNED  ${dim("· 24h ·")} ${catColor(SPENT_RGB)("spent")} ${dim("/")} ${catColor(EARN_RGB)("earned")}  ${nav}`;
-    chartLines = s.chart.byType.startMs > 0 ? renderHourlySpentEarned(cols, s.chart.byType, b?.ethUsd ?? null) : placeholder;
+    chartLines = hasHourly ? renderHourlySpentEarned(cols, s.chart.byType, b?.ethUsd ?? null) : placeholder;
   } else if (ci === 2) {
     chartTitle = `HOURLY EXPENSES  ${dim("· 24h ·")} ${catColor(CAT_RGB.xapi)("x-api")} ${dim("/")} ${catColor(CAT_RGB.inference)("inference")} ${dim("/")} ${catColor(CAT_RGB.compute)("compute")}  ${nav}`;
-    chartLines = s.chart.byType.startMs > 0 ? renderHourlyBars(cols, s.chart.byType) : placeholder;
+    chartLines = hasHourly ? renderHourlyBars(cols, s.chart.byType) : placeholder;
   } else if (ci === 3) {
     chartTitle = `SPENT vs EARNED  ${dim("· all time ·")} ${catColor(SPENT_RGB)("spent")} ${dim("/")} ${catColor(EARN_RGB)("earned")}  ${nav}`;
     chartLines = hasData(s.chart.all) ? renderLineChart(cols, s.chart.all, b?.ethUsd ?? null, s.chart.all.startMs, s.chart.all.endMs) : placeholder;
@@ -856,7 +856,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
 
   const ssh = new NodeSSH();
   try {
-    await ssh.connect({ host: target.ip, username: "root", password: target.password, tryKeyboard: true });
+    await ssh.connect({ host: target.ip, username: "root", password: target.password, tryKeyboard: true, ...hostKeyConfig(target.ip) });
   } catch (err) {
     console.error(`  Could not connect to root@${target.ip}: ${err instanceof Error ? err.message : String(err)}`);
     return;
@@ -868,7 +868,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
   const state: State = {
     ip: target.ip, handle, admins: admins || dim("none"), wallet: null,
     stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, devWeth: 0, spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0, spentByType: { "x-api": 0, inference: 0, compute: 0 }, chart: { day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 }, all: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 }, byType: { startMs: 0, xapi: [], inference: [], compute: [], earned: [] } } },
-    logs: [], pm2: null, specs: null, frame: 0, balances: null, computeHours: null,
+    logs: [], pm2: null, specs: null, balances: null, computeHours: null,
     creditUsd: null,
     sysCpu: null, sysMemMb: null, sysDiskUsed: null, scroll: 0, logRows: 0, confirm: null,
     chartIndex: 0,
@@ -878,6 +878,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
   let pm2Timer: NodeJS.Timeout | undefined;
   let balanceTimer: NodeJS.Timeout | undefined;
   let backupTimer: NodeJS.Timeout | undefined;
+  let computeRetryTimer: NodeJS.Timeout | undefined;
   let onKey: ((buf: Buffer) => void) | undefined;
   let redeployPromise: Promise<void> | null = null;
   let done = false;
@@ -886,6 +887,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
     if (pm2Timer) clearInterval(pm2Timer);
     if (balanceTimer) clearInterval(balanceTimer);
     if (backupTimer) clearInterval(backupTimer);
+    if (computeRetryTimer) clearTimeout(computeRetryTimer);
   };
   const restoreTerminal = () => {
     if (onKey && process.stdin.isTTY) {
@@ -948,7 +950,11 @@ export async function runStatus(target: { ip: string; password?: string; handle?
     return false;
   };
   const ensureCompute = (address: `0x${string}`) => {
-    refreshCompute(address).then((ok) => { if (!ok && !done) setTimeout(() => ensureCompute(address), 30_000); });
+    refreshCompute(address).then((ok) => {
+      // Tracked + re-checked at fire time so stopTimers()/cleanup() really ends the
+      // chain (an untracked timeout would fire one more API call mid-redeploy/quit).
+      if (!ok && !done) computeRetryTimer = setTimeout(() => { if (!done) ensureCompute(address); }, 30_000);
+    });
   };
   const refreshTreasury = (address: `0x${string}`) => { refreshBalances(address); ensureCompute(address); };
 
@@ -1013,7 +1019,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
 
   if (interactive) {
     process.stdout.write("\x1b[?25l\x1b[2J\x1b[3J\x1b[H"); // hide cursor, clear screen
-    renderTimer = setInterval(() => { state.frame++; render(state); }, 250);
+    renderTimer = setInterval(() => render(state), 250);
     pm2Timer = setInterval(() => { fetchPm2(ssh).then((p) => { if (p) state.pm2 = p; }).catch(() => {}); refreshSysUsage(); refreshStats(); }, 5000);
     balanceTimer = setInterval(() => { if (state.wallet) refreshTreasury(state.wallet as `0x${string}`); refreshCredits(); }, BALANCE_INTERVAL_MS);
 
@@ -1134,7 +1140,6 @@ function demo() {
     scroll: 0, logRows: 0,
     confirm: null,
     chartIndex: 0,
-    frame: 0,
     logs: [
       "[2026-06-08 12:30:01] INFO: poll cycle start",
       '[2026-06-08 12:30:02] INFO: new mentions found {"count":2}',
@@ -1155,7 +1160,7 @@ function check(cols = 143, rows = 40) {
     ip: "95.179.144.82", handle: "evvrbot", admins: "@alexben0006", wallet: "0xe6440ce076a5b491e7d6378223517d60a96b1326",
     stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, devWeth: 0, spentUsdWindow: 12, inferenceUsdWindow: 1, earnedWethWindow: 0.001, rateWindowHours: 24, spentByType: { "x-api": 8, inference: 1, compute: 3 }, chart: { day: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.2), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.00005), startMs: Date.now() - 24 * 3_600_000, endMs: Date.now() }, all: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.5), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.0001), startMs: Date.now() - 40 * 86_400_000, endMs: Date.now() }, byType: { startMs: Date.now() - 23 * 3_600_000, xapi: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.02 : 0), inference: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.003 : 0), compute: Array.from({ length: 24 }, (_, i) => i === 16 ? 0.05 : 0), earned: Array.from({ length: 24 }, (_, i) => i >= 14 ? 0.000006 : 0) } } },
     pm2: { status: "online", bootMs: Date.now() - 945_000, restarts: 1, mem: 110 * 1024 * 1024, cpu: 0.4 },
-    specs: { cpu: "1", ram: "951Mi", disk: "23G", os: "Ubuntu 22.04.5 LTS" }, frame: 0, scroll: 0, logRows: 0,
+    specs: { cpu: "1", ram: "951Mi", disk: "23G", os: "Ubuntu 22.04.5 LTS" }, scroll: 0, logRows: 0,
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
     computeHours: 19.5, creditUsd: 4.21, sysCpu: 4, sysMemMb: 740, sysDiskUsed: "9.1G", confirm: null, chartIndex: 0,
     logs: Array.from({ length: 30 }, () => long),

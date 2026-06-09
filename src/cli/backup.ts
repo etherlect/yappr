@@ -42,10 +42,14 @@ export async function latestLocalBackup(): Promise<string | null> {
   return files.length ? join(backupDir(), files[files.length - 1]) : null;
 }
 
-// True if `path` exists on the remote host.
+// Single-quote a path for safe interpolation into a remote shell command.
+const shq = (p: string) => `'${p.split("'").join(`'\\''`)}'`;
+
+// True if `path` exists on the remote host. Decided by `test -f`'s exit code —
+// never by parsing stdout, which channel noise could corrupt.
 export async function remoteFileExists(ssh: NodeSSH, path: string): Promise<boolean> {
-  const r = await ssh.execCommand(`test -f ${path} && echo yes || echo no`, { cwd: "/" });
-  return r.stdout.trim() === "yes";
+  const r = await ssh.execCommand(`test -f ${shq(path)}`, { cwd: "/" });
+  return r.code === 0;
 }
 
 // Snapshot the server DB (consistent, via SQLite VACUUM INTO in stats-cli) and pull it
@@ -58,7 +62,7 @@ export async function backupRemoteDb(ssh: NodeSSH): Promise<string> {
 
   // `cd /yappr` so stats-cli's dotenv picks up DB_PATH; the engine lives in node_modules.
   const snap = await ssh.execCommand(
-    `cd /yappr && node node_modules/yappr/dist/src/stats-cli.js backup ${remoteTmp}`,
+    `cd /yappr && node node_modules/yappr/dist/src/stats-cli.js backup ${shq(remoteTmp)}`,
     { cwd: "/" },
   );
   if (snap.code !== 0) {
@@ -67,8 +71,13 @@ export async function backupRemoteDb(ssh: NodeSSH): Promise<string> {
 
   await mkdir(backupDir(), { recursive: true });
   const local = join(backupDir(), `yappr-${dayStamp()}.db`);
-  await ssh.getFile(local, remoteTmp);
-  await ssh.execCommand(`rm -f ${remoteTmp}`, { cwd: "/" });
+  try {
+    await ssh.getFile(local, remoteTmp);
+  } finally {
+    // Remove the remote snapshot even when the download fails — each one is a
+    // full DB copy, and stranded ones would pile up in the server's /tmp.
+    await ssh.execCommand(`rm -f ${shq(remoteTmp)}`, { cwd: "/" }).catch(() => {});
+  }
 
   await pruneOldBackups();
   return local;

@@ -131,7 +131,13 @@ export function recordError(): void { insert({ kind: "error" }); }
 // the events table a clean, sliceable record of real earnings, not poll noise.
 export function recordEarned(weth: number): void {
   if (!Number.isFinite(weth) || weth < 0) return;
-  const prev = getMeta("last_earned_weth") ?? 0;
+  const prev = getMeta("last_earned_weth");
+  // First observation ever (fresh DB, no restored backup): just set the baseline.
+  // Booking an event here would drop the token's entire pre-agent fee history into
+  // the trailing window as one giant "earned" spike, faking the windowed metrics
+  // ("Sustainable: yes") and charts for a day. All-time earned still shows in full
+  // — summary() reads it from this gauge, not from summing events.
+  if (prev === undefined) { setMeta("last_earned_weth", weth); return; }
   if (weth > prev + 1e-12) insert({ kind: "earned", weth: weth - prev });
   setMeta("last_earned_weth", weth);
 }

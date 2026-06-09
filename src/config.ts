@@ -9,6 +9,16 @@ function optional(name: string, fallback: string): string {
   return process.env[name] || fallback;
 }
 
+// Numeric env var, validated at startup. A silent NaN here is dangerous — e.g. a
+// typo'd POLL_INTERVAL_MS would make setInterval fire every ~1ms, each tick a PAID
+// x402 call — so a malformed value fails the boot instead.
+function numeric(name: string, fallback: string): number {
+  const raw = optional(name, fallback);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`${name} must be a number, got "${raw}"`);
+  return n;
+}
+
 export const config = {
   agentHandle: requireEnv("AGENT_HANDLE"),
   bankrApiKey: requireEnv("BANKR_API_KEY"),
@@ -25,13 +35,13 @@ export const config = {
   // "mentions" uses the dedicated /tweets/mentions endpoint. Defaults to "search".
   pollMethod: (optional("POLL_METHOD", "search").toLowerCase() === "mentions" ? "mentions" : "search") as "mentions" | "search",
 
-  agentMaxSteps: Number(optional("AGENT_MAX_STEPS", "4")),
+  agentMaxSteps: numeric("AGENT_MAX_STEPS", "4"),
   llmModel: optional("LLM_MODEL", "deepseek-v4-flash"),
-  pollIntervalMs: Number(optional("POLL_INTERVAL_MS", "20000")),
-  treasuryIntervalMs: Number(optional("TREASURY_INTERVAL_MS", "3600000")),
-  burnBps: Number(optional("BURN_BPS", "5000")),
+  pollIntervalMs: numeric("POLL_INTERVAL_MS", "20000"),
+  treasuryIntervalMs: numeric("TREASURY_INTERVAL_MS", "3600000"),
+  burnBps: numeric("BURN_BPS", "5000"),
   devAddress: (process.env.DEV_ADDRESS && process.env.DEV_ADDRESS !== "none" ? process.env.DEV_ADDRESS : null) as `0x${string}` | null,
-  devTokenBps: Number(optional("DEV_TOKEN_BPS", "0")),
-  devWethBps: Number(optional("DEV_WETH_BPS", "0")),
+  devTokenBps: numeric("DEV_TOKEN_BPS", "0"),
+  devWethBps: numeric("DEV_WETH_BPS", "0"),
   treasuryDryRun: optional("TREASURY_DRY_RUN", "false") === "true",
 } as const;

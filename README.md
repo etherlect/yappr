@@ -53,6 +53,24 @@ The deploy script prompts for each of these if not already set in `.env`:
 
 `COMPUTE_INSTANCE_ID` is written automatically by the deploy script.
 
+### Optional env vars
+
+All have sensible defaults; set them in `.env` to override:
+
+| Var | Default | Description |
+|-----|---------|-------------|
+| `POLL_METHOD` | `search` | How mentions are polled: `search` (/tweets/search mentioning the handle) or `mentions` (the dedicated /tweets/mentions endpoint) |
+| `POLL_INTERVAL_MS` | `20000` | Mention poll cadence |
+| `AGENT_MAX_STEPS` | `4` | Max skill calls per reply before the loop forces a final answer |
+| `LLM_MODEL` | `deepseek-v4-flash` | Model served by the Bankr LLM Gateway |
+| `TREASURY_INTERVAL_MS` | `3600000` | Treasury cycle cadence (1h) |
+| `BURN_BPS` | `5000` | Share of claimed token fees to burn (basis points; `0` disables) |
+| `DEV_ADDRESS` | unset | Recipient of the optional dev cut (`none`/blank disables) |
+| `DEV_TOKEN_BPS` / `DEV_WETH_BPS` | `0` | Dev cut of claimed token / WETH (basis points) |
+| `TREASURY_DRY_RUN` | `false` | Log treasury/wallet writes without submitting anything |
+| `LLM_TIMEOUT_MS` | `120000` | Per-request timeout on LLM completions |
+| `DB_PATH` | `./yappr.db` | SQLite database location (the deploy sets `/var/lib/yappr/yappr.db` on the server) |
+
 ## Commands
 
 With `yappr` installed in your project (`npm i yappr`), run any command with `npx` from your project directory — the one holding your `.env` and `config/`:
@@ -66,7 +84,7 @@ With `yappr` installed in your project (`npm i yappr`), run any command with `np
 | `npx yappr ssh [id]` | Open an interactive root shell on the deployed instance. Optional `id` overrides `COMPUTE_INSTANCE_ID`. |
 | `npx yappr help` | List the commands. |
 
-`deploy`, `status`, and `ssh` resolve the target box from `COMPUTE_INSTANCE_ID` / `COMPUTE_HOST` in your `.env` (or the optional `[id]` argument).
+`deploy`, `status`, and `ssh` resolve the target box from `COMPUTE_INSTANCE_ID` / `COMPUTE_HOST` in your `.env` (or the optional `[id]` argument). On first connect they pin the box's SSH host key in `.yappr-known-hosts` (next to `.env`) and refuse a changed key afterwards — if you reprovision the instance, delete its line from that file and reconnect.
 
 ## Customising the agent
 
@@ -183,6 +201,8 @@ Two **separate fuel tanks** back the agent: **USDC** pays X-API + compute, **LLM
   Displayed as e.g. `yes (+$12.40)` / `no (-$0.30)`.
 
 WETH earnings are converted with the live ETH price (DefiLlama). The window length, the ≥1h data threshold, and the predicted poll cost are constants in `src/cli/status.ts`.
+
+Below the ACTIVITY row, a CHART panel offers four views (cycle with ←/→): hourly spent-vs-earned bars (24h), hourly expenses stacked by category (x-api / inference / compute), and cumulative spent-vs-earned line charts over all time and the last 24h.
 
 ## Backups
 

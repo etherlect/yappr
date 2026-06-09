@@ -21,6 +21,7 @@ import {
   computeInstanceIp,
   computeInstancePassword,
 } from "../compute.js";
+import { hostKeyConfig } from "./host-key.js";
 
 // Open a fully interactive PTY shell over the established connection, wiring it
 // to the local terminal (raw mode, resize forwarding). Resolves with the remote
@@ -67,7 +68,7 @@ async function interactiveShell(ssh: NodeSSH): Promise<number> {
 // shell. Returns the remote shell's exit code.
 async function connectAndShell(ip: string, pw: string): Promise<number> {
   const ssh = new NodeSSH();
-  await ssh.connect({ host: ip, username: "root", password: pw, tryKeyboard: true });
+  await ssh.connect({ host: ip, username: "root", password: pw, tryKeyboard: true, ...hostKeyConfig(ip) });
   const code = await interactiveShell(ssh);
   ssh.dispose();
   return code;
