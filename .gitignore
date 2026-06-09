@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+yappr.db
+yappr.db-wal
+yappr.db-shm
+.DS_Store
+*.log

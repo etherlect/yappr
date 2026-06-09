@@ -1,0 +1,60 @@
+{
+  "name": "yappr",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Self-sustaining x402 X/Twitter reply agent — forkable, Bankr-wallet-powered, economically autonomous",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "bin": {
+    "yappr": "./dist/src/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "config",
+    ".env.example",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/yappr"
+  },
+  "scripts": {
+    "dev": "tsx --conditions=development watch src/yappr.ts",
+    "dev:old": "tsx --conditions=development watch src/yappr.ts --process-old",
+    "start": "node dist/src/yappr.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "deploy": "tsx src/cli/deploy.ts",
+    "ssh": "tsx src/cli/ssh.ts",
+    "status": "tsx src/cli/status.ts"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^8.5.2",
+    "@x402/evm": "^2.13.0",
+    "@x402/fetch": "^2.13.0",
+    "better-sqlite3": "^12.10.0",
+    "cli-truncate": "^6.0.0",
+    "dotenv": "^16.4.5",
+    "jiti": "^2.7.0",
+    "node-ssh": "^13.0.0",
+    "ora": "^9.4.0",
+    "pino": "^10.3.1",
+    "pino-pretty": "^11.3.0",
+    "string-width": "^8.2.1",
+    "viem": "^2.0.0"
+  },
+  "devDependencies": {
+    "@bankr/cli": "^0.3.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

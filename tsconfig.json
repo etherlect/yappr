@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "rootDir": ".",
+    "declaration": true,
+    "baseUrl": ".",
+    // Self-reference: skills/hooks import the engine as "yappr". For typechecking we
+    // map it to the current source; at runtime Node's package `exports` resolves it
+    // (to src in dev via the development condition, to dist in prod).
+    "paths": { "yappr": ["./src/index.ts"] },
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*", "config/**/*"],
+  "exclude": ["node_modules", "dist", "scripts"]
+}

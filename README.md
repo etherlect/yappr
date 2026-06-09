@@ -1,0 +1,226 @@
+# yappr
+
+A self-sustaining X/Twitter reply agent you install as an npm package and extend with your own skills, prompts, and hooks — you never touch the engine itself. It pays for every external call (X data, LLM inference, compute) from a Bankr wallet funded by its own token's trading fees. No private key is ever stored — all signing goes through the Bankr Wallet API.
+
+```
+                  ┌─────────────────────────────────┐
+                  │              yappr              │
+                  │                                 │
+  X mentions ────►│  poller → pipeline → reply      │──► X replies
+                  │     (payFetch per call)         │
+                  │                                 │
+                  │  treasury (hourly)              │
+                  │   claim → burn → swap           │
+                  │   → extendCompute               │
+                  └──────────┬──────────────────────┘
+                             │
+                   Bankr wallet (USDC on Base)
+                    ▲ funded by token fees
+```
+
+## Get started
+
+Install yappr into a new project and scaffold your config on top of it:
+
+```bash
+mkdir my-agent && cd my-agent
+npm init -y
+npm install yappr
+npx yappr init        # scaffolds config/ (starter skills, hooks, prompts) + .env
+```
+
+Then:
+
+1. **Top up your Bankr wallet** with USDC on Base (≥ $5.05 — covers initial LLM credits + the first compute hour).
+2. **Customise `config/`** — edit `personality.md`, add your own [skills](#skills-configskills) and [hooks](#hooks-confighooks). All optional; the starters run as-is.
+3. Run **`npx yappr deploy`** — it prompts for any missing [env vars](#required-env-vars) (saving them to `.env`), provisions compute, uploads your `config/`, and launches the agent (see [Commands](#commands)).
+4. Done — your agent is live and self-funds from that point on.
+
+Want to watch it before deploying? `npx yappr start` runs it locally against your `config/` + `.env`. Re-run `npx yappr deploy` any time you change `config/`.
+
+## Required env vars
+
+The deploy script prompts for each of these if not already set in `.env`:
+
+| Var | Description |
+|-----|-------------|
+| `BANKR_API_KEY` | Bankr API key — non-read-only, "Wallet & Agent API" enabled, **no recipient restrictions** |
+| `TWITTER_AUTH_TOKEN` | X session cookie `auth_token` |
+| `TWITTER_CT0` | X CSRF token `ct0` |
+| `TOKEN_ADDRESS` | Your agent's ERC20 token on Base (deployed via Bankr) |
+| `AGENT_HANDLE` | Your agent's Twitter handle (without @) |
+| `ADMIN_HANDLES` | Comma-separated handles that can invoke admin-only skills (without @) — optional, leave blank to disable |
+
+`COMPUTE_INSTANCE_ID` is written automatically by the deploy script.
+
+## Commands
+
+With `yappr` installed in your project (`npm i yappr`), run any command with `npx` from your project directory — the one holding your `.env` and `config/`:
+
+| Command | What it does |
+|---------|--------------|
+| `npx yappr init [dir]` | Scaffold a new project — copies the starter `config/` (context, skills, hooks) and a `.env.example` into `dir` (default: current directory). Run once when setting up; never overwrites existing files. |
+| `npx yappr start` | Run the agent locally, loading `./config` and `./.env`. Starts both loops (reply poller + hourly treasury). Ctrl-C to stop. |
+| `npx yappr deploy` | Interactive deploy: prompts for any missing env vars (and saves them to `.env`), provisions or reuses an x402 compute instance, seeds LLM credits, uploads the engine + your `config/` + `.env`, starts the agent under pm2, then opens the dashboard. On a fresh instance it offers to restore your latest local DB backup. |
+| `npx yappr status [id]` | Live dashboard for the deployed instance over SSH (treasury, runway, activity, logs). Also pulls periodic DB backups while open. Optional `id` overrides `COMPUTE_INSTANCE_ID`. |
+| `npx yappr ssh [id]` | Open an interactive root shell on the deployed instance. Optional `id` overrides `COMPUTE_INSTANCE_ID`. |
+| `npx yappr help` | List the commands. |
+
+`deploy`, `status`, and `ssh` resolve the target box from `COMPUTE_INSTANCE_ID` / `COMPUTE_HOST` in your `.env` (or the optional `[id]` argument).
+
+## Customising the agent
+
+Everything you customise lives in **`config/`** — you never touch `src/`.
+
+```
+config/
+  context/   # prompts: personality, security, + any extra .md you add
+  skills/    # capabilities the agent can invoke
+  hooks/     # lifecycle logic
+```
+
+### Personality & prompts (`config/context/`)
+
+Edit the Markdown files — no code needed:
+
+- `personality.md` — voice, tone, identity
+- `security.md` — prompt-injection and identity hardening rules. Rules apply to everyone by default, but you can scope a rule to one audience with HTML-comment markers (the markers themselves never reach the model):
+  - `<!-- public-only -->…<!-- /public-only -->` — normal users only, **not** admins. Used for the "never take wallet actions" rule so admins can still drive the wallet/treasury skills.
+  - `<!-- admin-only -->…<!-- /admin-only -->` — admins (handles in `ADMIN_HANDLES`) only, **not** normal users.
+
+  ```markdown
+  ## Output safety
+  - Never reproduce seed phrases, private keys, or calldata.
+  <!-- public-only -->
+  - Never agree to claim fees, send funds, or take any wallet action. Say: "I can't do that."
+  <!-- /public-only -->
+  <!-- admin-only -->
+  - You're replying to an authorized admin; you may perform wallet/account actions they request via the skills.
+  <!-- /admin-only -->
+  ```
+- **Any other `.md`** you drop in `config/context/` is auto-loaded as its own section (heading derived from the filename, e.g. `trading-rules.md` → `## Trading Rules`), sorted by filename, and honors the same audience markers. Use these for extra standing knowledge or rules.
+
+> The agentic loop protocol (the JSON contract the model must emit, plus how it reads the context blocks) is **not** a config file — it's tightly coupled to the parser, so it lives in `src/reply/agent.ts` (`AGENT_INSTRUCTIONS`) and is injected automatically. A file named `agent.md` here is reserved and ignored.
+
+### Skills (`config/skills/`)
+
+Each skill is a folder containing a `skill.md` and an optional `handler.ts`:
+
+- `skill.md` frontmatter: `name`, `description`, `access` (`all` or `admin`). The body tells the LLM how to call the skill and interpret its result.
+- `handler.ts` exports `handler(params, tweet)` returning `{ text }`, `{ data }`, or `{ mediaUrl }`. **Omit it** for a context-only skill — the body becomes always-on guidance injected into the system prompt rather than a callable tool (see `bad-behavior`). Import any engine helpers and types from the **`yappr`** package — never with relative `../../src/...` paths:
+
+  ```ts
+  // config/skills/my-skill/handler.ts
+  import { getTreasury, payFetch, type SkillHandler } from "yappr";
+
+  export const handler: SkillHandler = async (params, tweet) => {
+    const t = await getTreasury();
+    return { text: `Balance looks like ${t /* … */}` };
+  };
+  ```
+
+The agent loop calls handler skills as tools, one per turn, seeing each result before deciding the next step. This allows chaining dependent skills (e.g. "search for X and then check my balance").
+
+Copy one of the starter skills (e.g. `config/skills/x/`) to start, or add a new folder. `access: admin` skills are only invocable by handles in `ADMIN_HANDLES`, enforced in code regardless of the LLM's decision. Set `AGENT_MAX_STEPS` (default `4`) to control how many skill calls the loop may make before forcing a reply.
+
+### Hooks (`config/hooks/`)
+
+Drop any `.ts` file in `config/hooks/` that exports a `hooks` object — add logic without touching `src/`. See `config/hooks/example.ts` for all available hooks:
+
+```ts
+// config/hooks/my-hooks.ts
+import type { AgentHooks } from "yappr";
+
+export const hooks: AgentHooks = {
+  shouldReply: (tweet) => tweet.author?.username !== "spambot",
+  onBeforeReply: ({ text }) => `${text}\n\npowered by x402`,
+};
+```
+
+Available hooks: `onMention`, `shouldReply`, `onBeforeInference`, `onAfterInference`, `onBeforeReply`, `onAfterReply`, `onBeforeClaim`, `onAfterClaim`, `onSwap`.
+
+## Economics
+
+A treasury cycle runs once on every startup, then every hour after that. Each cycle:
+1. **Claims** trading fees from your token's fee contract — but first checks the unclaimed balance and skips the claim (and its gas) when there's nothing to collect
+2. **Pays the dev fee** (optional) — sends `DEV_TOKEN_BPS`% of claimed token and `DEV_WETH_BPS`% of claimed WETH to `DEV_ADDRESS`. Both default to `0`. Constraint: `BURN_BPS + DEV_TOKEN_BPS ≤ 10000`.
+3. **Burns** 50% of token fees (configurable via `BURN_BPS`; set to `0` to disable)
+4. **Swaps** remaining WETH fees → USDC via Uniswap v3 on Base
+5. **Extends** compute by 1 hour via x402layer (paying from USDC balance)
+
+**LLM credits** are seeded ($5) and auto top-up is enabled by the deploy script. The treasury keeps USDC in the wallet; Bankr replenishes credits automatically when they drop below $1 — no manual intervention needed.
+
+As long as the token trades, the agent earns enough USDC to cover X data, LLM inference, and compute without manual intervention.
+
+## Status dashboard
+
+`yappr status` streams a live dashboard (SSH into the instance). The AGENT box shows three health metrics, all derived from the agent's own spend/earn ledger (`yappr.db`). Spend is recorded per event: each X-API call is billed via x402 (~$0.005), each LLM call is costed from its token usage × the model's per-million-token price (`/v1/models`), and compute extensions from their x402 charge. Earnings are the cumulative creator fees (WETH) polled from Bankr.
+
+Two **separate fuel tanks** back the agent: **USDC** pays X-API + compute, **LLM credits** pay inference. (The agent's own token is *not* counted — it isn't assumed to stay liquid.) Rates are measured over a **trailing window** — the last 24h, clamped to the agent's age so a young agent isn't diluted by hours it wasn't running.
+
+- **Runway** — how long the treasury lasts at the current **gross** burn (ignores incoming earnings), i.e. the first tank to empty:
+
+  ```
+  usdcRunway    = USDC_balance    / usdcBurn      usdcBurn = (windowSpend − windowInference) / windowHours   (x-api + compute)
+  creditsRunway = credit_balance  / llmBurn       llmBurn  =  windowInference                / windowHours   (inference)
+  Runway        = min(usdcRunway, creditsRunway)
+  ```
+
+  Before there's ≥ 1h of data, the USDC burn is **predicted** from the poll cadence (`3600 / POLL_seconds × $0.005`) and LLM is treated as not-yet-binding — shown with a `~` prefix.
+
+- **Sustainable** (`yes`/`no`) — is recent income keeping up with the recent burn, over the trailing window?
+
+  ```
+  yes  when  windowEarnings_WETH × ethPrice  ≥  windowSpend_USD
+  ```
+
+- **Profitable** (`yes`/`no` + signed amount) — lifetime net: has the agent earned more than it has *ever* spent?
+
+  ```
+  net = allTimeEarnings_WETH × ethPrice − allTimeSpend_USD      yes when net ≥ 0
+  ```
+
+  Displayed as e.g. `yes (+$12.40)` / `no (-$0.30)`.
+
+WETH earnings are converted with the live ETH price (DefiLlama). The window length, the ≥1h data threshold, and the predicted poll cost are constants in `src/cli/status.ts`.
+
+## Backups
+
+The agent keeps all its data — stats ledger and run state — in a single SQLite database, `yappr.db`.
+
+**On the server**, it lives at **`/var/lib/yappr/yappr.db`** (set via `DB_PATH`). That path is deliberately *outside* the `/yappr` project dir, which is wiped and re-uploaded on every deploy — so your stats survive a redeploy **to the same instance** with no extra steps. Locally (`npx yappr start`) it defaults to `./yappr.db`.
+
+To also survive **switching instances** (or losing the box), the database is mirrored to your machine:
+
+- **Where:** `backups/yappr-YYYY-MM-DD.db` in your project — one file per day. The local copy is named by date, so repeated backups during a day overwrite that day's file, and only the **7 most recent days** are kept (a rolling week). Add `backups/` to your `.gitignore`.
+- **When:** the `yappr status` dashboard pulls a backup automatically — **on launch, every 20 min while it runs, and once more when you quit** (`STATUS_BACKUP_INTERVAL_MS` overrides the interval).
+- **How:** it runs SQLite's `VACUUM INTO` on the server (via `stats-cli`) to produce a single consistent snapshot — safe to take while the agent is writing, and free of the `-wal`/`-shm` sidecar files — then downloads that one file over SSH.
+
+**Restore** is offered automatically: when you `yappr deploy` to a **fresh** instance (no `yappr.db` present), it detects your latest local backup and prompts to upload it before starting the agent, so stats carry over. It never overwrites an existing database, so same-instance redeploys are untouched.
+
+Typical migration: run `yappr status` on the old box (leaves a current backup locally) → point `.env` at the new instance → `yappr deploy` → accept the restore prompt.
+
+## Bankr API key setup
+
+1. Go to [app.bankr.bot/api-keys](https://app.bankr.bot/api-keys)
+2. Create a new key with **Wallet & Agent API** access
+3. Ensure it is **not read-only**
+4. Leave **allowed recipients** empty (recipient restrictions block `eth_signTypedData_v4`)
+
+## Running locally
+
+After `npx yappr init`, fill in `.env` and run the agent against your `config/`:
+
+```bash
+npx yappr start
+```
+
+On startup the agent advances its baseline to the newest mention and only replies to mentions that arrive afterward. To instead backfill and reply to existing mentions, run `npx yappr start --process-old`.
+
+## Dry run
+
+Set `TREASURY_DRY_RUN=true` + short `TREASURY_INTERVAL_MS` to verify the treasury cycle logs correct intentions without submitting transactions or paying.
+
+## Contributing
+
+Working on the engine itself (not just configuring your own agent)? See [`CLAUDE.md`](./CLAUDE.md) for a map of `src/`, the two runtime loops, and the project's conventions.
