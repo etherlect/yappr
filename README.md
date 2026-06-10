@@ -18,6 +18,15 @@ A self-sustaining X/Twitter reply agent you install as an npm package and extend
                     ▲ funded by token fees
 ```
 
+## Before you run `yappr deploy`
+
+Set these up on Bankr first (in order):
+
+1. **Log in at [bankr.bot](https://bankr.bot) with the agent's X/Twitter account** — the account that will own the token and receive its trading fees.
+2. **Generate an API key** — non-read-only, "Wallet & Agent API" enabled, no recipient restrictions (this becomes `BANKR_API_KEY`; details under [Bankr API key setup](#bankr-api-key-setup)).
+3. **Buy a Bankr Club subscription (~$20/month)** — *required only if you want deploy to launch the agent's token for you.* Without it, `yappr deploy`'s inline launch returns `403 Token launches are available to Bankr Club members only` and you must launch a token elsewhere and paste its address instead.
+4. **Fund the Bankr wallet** with USDC on Base. A first-time deploy needs **≥ $20** — the $5 LLM credit seed, ~$1 for the first compute day, and ~$14 for the first day of X-API usage. (If your LLM credits are already ≥ $1 the requirement drops to ~$15; redeploys that reuse an existing instance aren't gated.) The agent self-funds from trading fees after that.
+
 ## Get started
 
 Install yappr into a new project and scaffold your config on top of it:
@@ -31,9 +40,9 @@ npx yappr init        # scaffolds config/ (starter skills, hooks, prompts) + .en
 
 Then:
 
-1. **Top up your Bankr wallet** with USDC on Base (≥ $5.05 — covers initial LLM credits + the first compute hour).
+1. **Complete the [Bankr prerequisites](#before-you-run-yappr-deploy)** above (account, API key, optional Club, wallet funded).
 2. **Customise `config/`** — edit `personality.md`, add your own [skills](#skills-configskills) and [hooks](#hooks-confighooks). All optional; the starters run as-is.
-3. Run **`npx yappr deploy`** — it prompts for any missing [env vars](#required-env-vars) (saving them to `.env`), provisions compute, uploads your `config/`, and launches the agent (see [Commands](#commands)).
+3. Run **`npx yappr deploy`** — it prompts for any missing [env vars](#required-env-vars) (saving them to `.env`), launches the agent's token on Bankr (Club members) or accepts an existing address, provisions compute, uploads your `config/`, and starts the agent (see [Commands](#commands)).
 4. Done — your agent is live and self-funds from that point on.
 
 Want to watch it before deploying? `npx yappr start` runs it locally against your `config/` + `.env`. Re-run `npx yappr deploy` any time you change `config/`.
@@ -47,7 +56,7 @@ The deploy script prompts for each of these if not already set in `.env`:
 | `BANKR_API_KEY` | Bankr API key — non-read-only, "Wallet & Agent API" enabled, **no recipient restrictions** |
 | `TWITTER_AUTH_TOKEN` | X session cookie `auth_token` — deploy can fetch it automatically via a browser login (see below) |
 | `TWITTER_CT0` | X CSRF token `ct0` — fetched together with `auth_token` by the browser login |
-| `TOKEN_ADDRESS` | Your agent's ERC20 token on Base (deployed via Bankr) |
+| `TOKEN_ADDRESS` | Your agent's ERC20 token on Base — paste an existing address, or let `yappr deploy` launch one on Bankr for you (Bankr Club members) |
 | `AGENT_HANDLE` | Your agent's Twitter handle (without @) |
 | `ADMIN_HANDLES` | Comma-separated handles that can invoke admin-only skills (without @) — optional, leave blank to disable |
 
@@ -56,6 +65,10 @@ The deploy script prompts for each of these if not already set in `.env`:
 **Connecting the X account:** when the two Twitter cookies aren't set, `yappr deploy` offers two ways to connect:
 - **Log in via browser** (recommended) — opens x.com in your installed Chrome; you log in normally, deploy reads the resulting `auth_token` + `ct0` cookies, saves them to `.env`, closes the browser, and continues. Your password is only ever typed into x.com itself. The detected handle also pre-fills `AGENT_HANDLE`.
 - **Enter cookies manually** — paste the two cookie values yourself (from your browser's devtools).
+
+**The agent's token:** when `TOKEN_ADDRESS` isn't set, `yappr deploy` asks whether your token already exists:
+- **Already deployed** — paste the `0x…` contract address.
+- **Launch it now** (Bankr Club members) — a short guided flow (name, ticker, optional image/X-post/website links) deploys a fixed-supply token on Base, gas sponsored, with all trading fees routed to your agent's X handle. The new address is written to `.env` as `TOKEN_ADDRESS`. Without a Club subscription this returns a 403; deploy then falls back to the paste-an-address prompt.
 
 ### Optional env vars
 

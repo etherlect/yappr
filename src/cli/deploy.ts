@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 import { NodeSSH } from "node-ssh";
 import { input, password, confirm as inquirerConfirm, select } from "@inquirer/prompts";
 import ora, { type Ora } from "ora";
-import { bankrApi } from "../bankr.js";
+import { bankrApi, deployTokenLaunch } from "../bankr.js";
 import { createBankrSigner, createPayFetch } from "../x402.js";
 import {
   computeInstanceData,
@@ -115,6 +115,28 @@ async function spin<T>(label: string, fn: (spinner: Ora) => Promise<T>, doneLabe
 // `confirm` from inquirer, wrapped so Ctrl-C exits cleanly instead of throwing
 async function confirm(message: string, defaultValue = false): Promise<boolean> {
   return inquirerConfirm({ message, default: defaultValue });
+}
+
+// Shared field validators (used for TOKEN_ADDRESS, DEV_ADDRESS, and the token-launch
+// fallback). A 0x… 40-hex EVM address, and a plain http(s) URL.
+const EVM_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+const validateAddress = (v: string) => EVM_ADDRESS_RE.test(v) || "Must be a 0x… 42-character address.";
+const isHttpUrl = (v: string) => /^https?:\/\/\S+$/.test(v) || "Must be an http(s):// URL.";
+
+// Pull Bankr's human message out of a thrown bankrApi error. bankrApi throws
+// `Bankr <path> failed: <status> <body>`; when the body is JSON with an `error`
+// (or `message`) field, return just that text — otherwise the raw message.
+function bankrErrorText(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const jsonStart = msg.indexOf("{");
+  if (jsonStart !== -1) {
+    try {
+      const body = JSON.parse(msg.slice(jsonStart)) as { error?: unknown; message?: unknown };
+      if (typeof body.error === "string") return body.error;
+      if (typeof body.message === "string") return body.message;
+    } catch { /* not JSON — fall through */ }
+  }
+  return msg;
 }
 
 // ─── process helpers ──────────────────────────────────────────────────────────
@@ -423,14 +445,81 @@ async function main() {
       await field("TWITTER_CT0", "X/Twitter ct0 cookie", { required: true, secret: true });
     }
   }
-  await field("TOKEN_ADDRESS", "Agent token address on Base", {
-    required: true,
-    validate: (v) => /^0x[a-fA-F0-9]{40}$/.test(v) || "Must be a 0x… 42-character address.",
-  });
+  // AGENT_HANDLE before the token step: the launch flow needs it for the fee
+  // recipient. The browser-login path may have set it already; field() is
+  // isUnset-guarded, so this is a no-op then.
   await field("AGENT_HANDLE", "Agent's Twitter handle (without @)", {
     required: true,
     transform: (v) => v.replace(/^@/, ""),
   });
+
+  // ── Token: reuse an existing CA, or launch one on Bankr inline ──
+  // The agent funds itself from its token's trading fees, so a token is required.
+  const promptForExistingToken = () =>
+    field("TOKEN_ADDRESS", "Agent token address on Base", { required: true, validate: validateAddress });
+
+  const launchToken = async (): Promise<void> => {
+    const handle = process.env.AGENT_HANDLE!; // set + @-stripped by the field() above
+    const tokenName = (await input({ message: "Token name", validate: (v) => v.trim() ? true : "Required." })).trim();
+    const tokenSymbol = (await input({
+      message: "Token symbol (ticker)",
+      validate: (v) => {
+        const s = v.trim().replace(/^\$/, "");
+        return s.length >= 1 && s.length <= 11 ? true : "1–11 characters.";
+      },
+    })).trim().replace(/^\$/, "");
+    const image = (await input({ message: "Image URL (optional)", validate: (v) => !v.trim() || isHttpUrl(v.trim()) })).trim();
+    const tweet = (await input({ message: "X link — announcement post (optional)", validate: (v) => !v.trim() || isHttpUrl(v.trim()) })).trim();
+    const website = (await input({ message: "Website link (optional)", validate: (v) => !v.trim() || isHttpUrl(v.trim()) })).trim();
+
+    info(`All fees will be redirected to your agent handle on X: ${accent("@" + handle)}`);
+    if (!await confirm(`Ready to launch $${tokenSymbol} — confirm?`, true)) {
+      info("Launch cancelled — re-run yappr deploy when ready, or supply an existing address.");
+      await promptForExistingToken();
+      return;
+    }
+
+    let res;
+    try {
+      res = await spin(
+        `Launching $${tokenSymbol} on Bankr…`,
+        () => deployTokenLaunch(bankrApiKey, {
+          tokenName,
+          tokenSymbol,
+          feeRecipient: { type: "x", value: handle },
+          image: image || undefined,
+          website: website || undefined,
+          tweet: tweet || undefined,
+        }),
+        "Token launched",
+      );
+    } catch (err) {
+      // Show Bankr's reason verbatim (e.g. the Club-only 403), then fall back to
+      // the manual address prompt so a Club-less operator can paste an existing CA.
+      fail(bankrErrorText(err));
+      await promptForExistingToken();
+      return;
+    }
+
+    const ca = res.tokenAddress;
+    if (!ca) throw new Error(`Token launch returned no address: ${JSON.stringify(res)}`);
+    await setEnvVar(envPath, "TOKEN_ADDRESS", ca);
+    ok("Your token is launched!");
+    info(`The following CA was registered to the configuration: ${accent(ca)}`);
+    if (res.txHash) info(`Transaction: https://basescan.org/tx/${res.txHash}`);
+  };
+
+  if (!isUnset(process.env.TOKEN_ADDRESS)) {
+    info("TOKEN_ADDRESS already set — skipping");
+  } else if (await confirm("Is your agent's token already deployed on Bankr?", false)) {
+    await promptForExistingToken();
+  } else if (await confirm("Launch a new token on Bankr now?", true)) {
+    await launchToken();
+  } else {
+    fail("A token is required to deploy — launch one or supply an address.");
+    process.exit(1);
+  }
+
   await field("ADMIN_HANDLES", "Admin handles for admin-only skills, comma-separated (without @, blank to skip)", {
     transform: (v) => v.split(",").map((h) => h.trim().replace(/^@/, "")).filter(Boolean).join(","),
   });
@@ -488,7 +577,7 @@ async function main() {
     if (await confirm("Set up a dev fee (send a cut of each claim's token + WETH to a dev address)?", false)) {
       await field("DEV_ADDRESS", "Dev recipient address on Base", {
         required: true,
-        validate: (v) => /^0x[a-fA-F0-9]{40}$/.test(v) || "Must be a 0x… 42-character address.",
+        validate: validateAddress,
       });
 
       const burnBps = Number(process.env.BURN_BPS ?? "5000");

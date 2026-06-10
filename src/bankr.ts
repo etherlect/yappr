@@ -94,3 +94,31 @@ export async function bankrX402Pay<T = unknown>(
     tolerateHttpError: true,
   });
 }
+
+// Launch a fixed-supply token on Base via Bankr (gas sponsored). `feeRecipient`
+// routes trading fees: we send `{ type:"x", value:<agent handle> }` so the agent's
+// token funds the agent. Used by `yappr deploy` when the operator has no token yet.
+// Note: token launches require a Bankr Club subscription — a non-Club key gets a
+// 403 the caller surfaces verbatim. Never pass simulateOnly (it skips the deploy).
+export type TokenLaunchInput = {
+  tokenName: string;
+  tokenSymbol: string;
+  feeRecipient?: { type: "wallet" | "x" | "farcaster" | "ens"; value: string };
+  image?: string;
+  website?: string;
+  tweet?: string;
+};
+export type TokenLaunchResult = {
+  success?: boolean;
+  tokenAddress?: string;   // the deployed CA
+  poolId?: string;
+  txHash?: string;
+  chain?: string;
+  [k: string]: unknown;
+};
+export async function deployTokenLaunch(apiKey: string, input: TokenLaunchInput): Promise<TokenLaunchResult> {
+  return bankrApi<TokenLaunchResult>(apiKey, "/token-launches/deploy", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
