@@ -488,8 +488,8 @@ async function main() {
           tokenSymbol,
           feeRecipient: { type: "x", value: handle },
           image: image || undefined,
-          website: website || undefined,
-          tweet: tweet || undefined,
+          websiteUrl: website || undefined,
+          tweetUrl: tweet || undefined,
         }),
         "Token launched",
       );

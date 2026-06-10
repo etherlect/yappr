@@ -100,13 +100,18 @@ export async function bankrX402Pay<T = unknown>(
 // token funds the agent. Used by `yappr deploy` when the operator has no token yet.
 // Note: token launches require a Bankr Club subscription — a non-Club key gets a
 // 403 the caller surfaces verbatim. Never pass simulateOnly (it skips the deploy).
+//
+// Field names mirror the official @bankr/cli DeployTokenRequest EXACTLY — the API
+// silently ignores unknown keys, so the link fields MUST be `tweetUrl`/`websiteUrl`
+// (not `tweet`/`website`), or they're dropped.
 export type TokenLaunchInput = {
   tokenName: string;
   tokenSymbol: string;
   feeRecipient?: { type: "wallet" | "x" | "farcaster" | "ens"; value: string };
   image?: string;
-  website?: string;
-  tweet?: string;
+  description?: string;
+  tweetUrl?: string;
+  websiteUrl?: string;
 };
 export type TokenLaunchResult = {
   success?: boolean;
