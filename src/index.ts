@@ -11,7 +11,8 @@
 export type { SkillHandler, SkillResult, SkillDef, SkillAccess } from "./skills/types.js";
 export type { AgentHooks } from "./hooks/types.js";
 export type { Tweet, SearchResponse } from "./x/types.js";
-export type { Treasury } from "./treasury/index.js";
+export type { Treasury, TreasuryBalances } from "./treasury/index.js";
+export type { TreasuryCycleResult } from "./treasury/cycle.js";
 
 // ── Engine services ──
 export { agentPrompt } from "./agent-prompt.js";

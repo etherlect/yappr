@@ -15,7 +15,8 @@ import { recordDevWeth } from "../stats.js";
 // 0.0001 ETH in wei — kept unwrapped as a gas reserve so the wallet can transact.
 const ETH_RESERVE = 100_000_000_000_000n;
 
-type TreasuryCycleResult = {
+// What one cycle did, passed to the onAfterClaim hook (see hooks/types.ts).
+export type TreasuryCycleResult = {
   tokenClaimed: bigint;
   wethClaimed: bigint;
   tokenBurned: bigint;

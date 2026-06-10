@@ -5,6 +5,7 @@
 
 import { log } from "./log.js";
 import { config } from "./config.js";
+import { envNumber } from "./util.js";
 import { initBankr } from "./wallet.js";
 import { loadPrompts } from "./llm/prompts.js";
 import { setPrompts, loadModelPricing } from "./llm/index.js";
@@ -54,7 +55,7 @@ async function main() {
   // could report "no fees" before freshly-accrued fees became visible — then a later
   // cycle would do the claim, making the boot log look wrong. The hourly scheduler below
   // runs independently. (`runTreasuryCycle` self-catches, so this never crashes boot.)
-  const startupCycleDelayMs = Number(process.env.STARTUP_TREASURY_DELAY_MS || 10_000);
+  const startupCycleDelayMs = envNumber("STARTUP_TREASURY_DELAY_MS", 10_000);
   log.info({ delayMs: startupCycleDelayMs }, "scheduling startup treasury cycle");
   const startupCycle = setTimeout(() => {
     void runTreasuryCycle(treasury, log).catch((err) => log.error({ err }, "startup treasury cycle failed"));
@@ -70,7 +71,7 @@ async function main() {
     catch (err) { log.warn({ err }, "earnings poll failed"); }
   };
   await pollEarnings();
-  const earningsTimer = setInterval(() => void pollEarnings(), Number(process.env.EARNINGS_POLL_INTERVAL_MS || 60_000));
+  const earningsTimer = setInterval(() => void pollEarnings(), envNumber("EARNINGS_POLL_INTERVAL_MS", 60_000));
 
   log.info("yappr is running");
 

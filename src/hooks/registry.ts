@@ -1,5 +1,7 @@
 import type { AgentHooks } from "./types.js";
 import type { Tweet } from "../x/types.js";
+import type { TreasuryBalances } from "../treasury/index.js";
+import type { TreasuryCycleResult } from "../treasury/cycle.js";
 
 let _hooks: AgentHooks = {};
 
@@ -41,25 +43,11 @@ export async function runOnAfterReply(tweet: Tweet, text: string): Promise<void>
   if (_hooks.onAfterReply) await _hooks.onAfterReply({ tweet, text });
 }
 
-export async function runOnBeforeClaim(balances: {
-  token: bigint;
-  weth: bigint;
-  usdc: bigint;
-  eth: bigint;
-}): Promise<void> {
+export async function runOnBeforeClaim(balances: TreasuryBalances): Promise<void> {
   if (_hooks.onBeforeClaim) await _hooks.onBeforeClaim(balances);
 }
 
-export async function runOnAfterClaim(result: {
-  tokenClaimed: bigint;
-  wethClaimed: bigint;
-  tokenBurned: bigint;
-  tokenToDev: bigint;
-  wethToDev: bigint;
-  wethUnwrapped: bigint;
-  wethSwapped: bigint;
-  computeExtended: boolean;
-}): Promise<void> {
+export async function runOnAfterClaim(result: TreasuryCycleResult): Promise<void> {
   if (_hooks.onAfterClaim) await _hooks.onAfterClaim(result);
 }
 

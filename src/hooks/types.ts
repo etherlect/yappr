@@ -1,4 +1,6 @@
 import type { Tweet } from "../x/types.js";
+import type { TreasuryBalances } from "../treasury/index.js";
+import type { TreasuryCycleResult } from "../treasury/cycle.js";
 
 export type OnMentionHook = (tweet: Tweet) => Promise<void> | void;
 export type ShouldReplyHook = (tweet: Tweet) => Promise<boolean> | boolean;
@@ -16,22 +18,8 @@ export type OnBeforeReplyHook = (input: {
 }) => Promise<string | null> | string | null;
 export type OnAfterReplyHook = (input: { tweet: Tweet; text: string }) => Promise<void> | void;
 
-export type OnBeforeClaimHook = (balances: {
-  token: bigint;
-  weth: bigint;
-  usdc: bigint;
-  eth: bigint;
-}) => Promise<void> | void;
-export type OnAfterClaimHook = (result: {
-  tokenClaimed: bigint;
-  wethClaimed: bigint;
-  tokenBurned: bigint;
-  tokenToDev: bigint;
-  wethToDev: bigint;
-  wethUnwrapped: bigint;
-  wethSwapped: bigint;
-  computeExtended: boolean;
-}) => Promise<void> | void;
+export type OnBeforeClaimHook = (balances: TreasuryBalances) => Promise<void> | void;
+export type OnAfterClaimHook = (result: TreasuryCycleResult) => Promise<void> | void;
 export type OnSwapHook = (input: {
   kind: "burn" | "swap";
   amount: bigint;

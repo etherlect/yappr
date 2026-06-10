@@ -93,25 +93,20 @@ export async function loadPrompts(skills: SkillDef[]): Promise<Prompts> {
   };
 }
 
+// One "## <heading>" section listing each skill as "### name / description / body",
+// or "" when the list is empty (so the section drops out of the prompt entirely).
+function skillsSection(heading: string, skills: SkillDef[]): string {
+  if (skills.length === 0) return "";
+  const entries = skills.map((s) => {
+    const lines = [`### ${s.name}`, s.description];
+    if (s.body) lines.push("", s.body);
+    return lines.join("\n");
+  });
+  return `## ${heading}\n\n${entries.join("\n\n")}`;
+}
+
 function buildAgentPrompt(preamble: string, skills: SkillDef[], instructions: string): string {
-  const toolSkills = skills.filter((s) => s.handler);
-  const guidanceSkills = skills.filter((s) => !s.handler);
-
-  const toolsSection = toolSkills.length > 0
-    ? `## Skills (tools you can call)\n\n${toolSkills.map((s) => {
-        const lines = [`### ${s.name}`, s.description];
-        if (s.body) lines.push("", s.body);
-        return lines.join("\n");
-      }).join("\n\n")}`
-    : "";
-
-  const guidanceSection = guidanceSkills.length > 0
-    ? `## Response Guidance\n\n${guidanceSkills.map((s) => {
-        const lines = [`### ${s.name}`, s.description];
-        if (s.body) lines.push("", s.body);
-        return lines.join("\n");
-      }).join("\n\n")}`
-    : "";
-
+  const toolsSection = skillsSection("Skills (tools you can call)", skills.filter((s) => s.handler));
+  const guidanceSection = skillsSection("Response Guidance", skills.filter((s) => !s.handler));
   return [preamble, toolsSection, guidanceSection, instructions].filter(Boolean).join("\n\n");
 }

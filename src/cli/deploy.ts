@@ -12,7 +12,7 @@ import { NodeSSH } from "node-ssh";
 import { input, password, confirm as inquirerConfirm, select } from "@inquirer/prompts";
 import ora, { type Ora } from "ora";
 import { bankrApi } from "../bankr.js";
-import { createBankrSigner } from "../x402.js";
+import { createBankrSigner, createPayFetch } from "../x402.js";
 import {
   computeInstanceData,
   computeInstanceId,
@@ -23,10 +23,10 @@ import {
   fetchComputeInstance,
   fetchOneTimePassword,
   waitForComputeIp,
+  resolveEvmAddress,
 } from "../compute.js";
-import { wrapFetchWithPayment, x402Client, x402HTTPClient } from "@x402/fetch";
-import { registerExactEvmScheme } from "@x402/evm/exact/client";
 import { dim, bold, green, yellow, red, accent, YAPPR_ART } from "./ui.js";
+import { isUnset, setEnvVar, setEnvVarInContent, removeEnvVarInContent } from "./env.js";
 import { runStatus } from "./status.js";
 import { latestLocalBackup, remoteFileExists, backupLabel, REMOTE_DB_PATH } from "./backup.js";
 import { hostKeyConfig } from "./host-key.js";
@@ -88,55 +88,6 @@ async function spin<T>(label: string, fn: (spinner: Ora) => Promise<T>, doneLabe
 // `confirm` from inquirer, wrapped so Ctrl-C exits cleanly instead of throwing
 async function confirm(message: string, defaultValue = false): Promise<boolean> {
   return inquirerConfirm({ message, default: defaultValue });
-}
-
-// ─── env helpers ──────────────────────────────────────────────────────────────
-
-// A value that should be treated as "not set" — empty or an .env.example placeholder.
-function isUnset(value: string | undefined): boolean {
-  return !value || /^(bk_|0x)?\.\.\.$/.test(value) || value === "...";
-}
-
-// Quote a value so dotenv reads it back verbatim: unquoted values are trimmed and
-// truncated at an inline " #" — fatal for generated secrets like the one-time SSH
-// password, which can't be re-fetched. Plain values stay unquoted.
-function quoteEnvValue(value: string): string {
-  if (!/[#'"\s]/.test(value)) return value;
-  if (!value.includes("'")) return `'${value}'`;
-  if (!value.includes('"')) return `"${value}"`;
-  return value; // contains both quote kinds — leave as-is rather than corrupt it
-}
-
-function setEnvVarInContent(content: string, key: string, value: string): string {
-  const line = `${key}=${quoteEnvValue(value)}`;
-
-  // The replacements below MUST use a function: a plain replacement string would
-  // have its `$`-sequences ($&, $', $1, …) expanded by String.replace, silently
-  // mangling any value (passwords!) that contains them.
-
-  // Existing uncommented assignment — overwrite in place.
-  const active = new RegExp(`^${key}=.*$`, "m");
-  if (active.test(content)) return content.replace(active, () => line);
-
-  // Commented placeholder (e.g. "# KEY=" or "#KEY=...") — uncomment in place
-  // so the file stays clean instead of growing a duplicate at the bottom.
-  const commented = new RegExp(`^#\\s*${key}=.*$`, "m");
-  if (commented.test(content)) return content.replace(commented, () => line);
-
-  if (!content) return `${line}\n`;
-  return content.endsWith("\n") ? `${content}${line}\n` : `${content}\n${line}\n`;
-}
-
-// Drop every assignment of `key` — used to keep credentials the server has no use
-// for (its own root password) out of the uploaded .env.
-function removeEnvVarInContent(content: string, key: string): string {
-  return content.replace(new RegExp(`^${key}=.*\\n?`, "gm"), "");
-}
-
-async function setEnvVar(envPath: string, key: string, value: string): Promise<void> {
-  const content = await readFile(envPath, "utf8").catch(() => "");
-  await writeFile(envPath, setEnvVarInContent(content, key, value));
-  process.env[key] = value;
 }
 
 // ─── process helpers ──────────────────────────────────────────────────────────
@@ -227,10 +178,7 @@ async function computeX402Pay<T = unknown>(
   url: string,
   body: string,
 ): Promise<T> {
-  const signer = createBankrSigner(apiKey, walletAddress);
-  const client = new x402Client();
-  registerExactEvmScheme(client, { signer });
-  const payFetch = wrapFetchWithPayment(fetch, new x402HTTPClient(client));
+  const payFetch = createPayFetch(createBankrSigner(apiKey, walletAddress));
 
   const res = await payFetch(url, {
     method: "POST",
@@ -285,9 +233,9 @@ async function waitForPort(host: string, port: number, timeoutMs: number): Promi
   while (Date.now() < deadline) {
     const reachable = await new Promise<boolean>((resolve) => {
       const socket = createConnection({ host, port });
-      socket.once("connect", () => { socket.destroy(); resolve(true); });
-      socket.once("error", () => { socket.destroy(); resolve(false); });
-      setTimeout(() => { socket.destroy(); resolve(false); }, 3000);
+      const timer = setTimeout(() => { socket.destroy(); resolve(false); }, 3000);
+      socket.once("connect", () => { clearTimeout(timer); socket.destroy(); resolve(true); });
+      socket.once("error", () => { clearTimeout(timer); socket.destroy(); resolve(false); });
     });
     if (reachable) return;
     await new Promise((r) => setTimeout(r, 5000));
@@ -502,9 +450,7 @@ async function main() {
   // ── Step 2: Bankr wallet ──────────────────────────────────────────────────
   step(2, TOTAL_STEPS, "Checking Bankr wallet");
 
-  const walletMe = await bankrApi<any>(bankrApiKey, "/wallet/me");
-  const address: string = walletMe.wallets?.find((w: any) => w.chain === "evm")?.address ?? walletMe.address;
-  if (!address) throw new Error(`Could not resolve EVM wallet address from /wallet/me`);
+  const address = await resolveEvmAddress(bankrApiKey);
   info(`Wallet:       ${address}`);
 
   let usdcBalance = 0;
@@ -652,6 +598,25 @@ async function main() {
     return pw;
   }
 
+  // The one root-password waterfall, used by both the existing-instance path and
+  // the post-provision install step: already-known (instance response) → .env →
+  // fetch-once + persist (when the API can serve it) → interactive prompt.
+  async function resolveSshPassword(current: string, id: string, canFetch: boolean): Promise<string> {
+    let pw = current;
+    if (!pw && !isUnset(process.env.COMPUTE_SSH_PASSWORD)) pw = process.env.COMPUTE_SSH_PASSWORD!;
+    if (!pw && canFetch) {
+      try {
+        pw = await spin("Fetching one-time root password…", () => fetchAndSavePassword(id), "Got one-time root password");
+      } catch (err) {
+        warn(`Could not fetch one-time password: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (!pw) {
+      pw = await password({ message: "Root one-time password", mask: "•", validate: (v) => v.trim() ? true : "Required." });
+    }
+    return pw;
+  }
+
   const existingComputeInstanceId = !isUnset(process.env.COMPUTE_INSTANCE_ID)
     ? process.env.COMPUTE_INSTANCE_ID!
     : "";
@@ -683,18 +648,9 @@ async function main() {
         : await input({ message: "Compute public IP", validate: (v) => v.trim() ? true : "Required." });
     }
 
-    // Instances use one-time root-password auth — fetch it (then env, then prompt).
-    if (!sshPassword && !isUnset(process.env.COMPUTE_SSH_PASSWORD)) sshPassword = process.env.COMPUTE_SSH_PASSWORD!;
-    if (!sshPassword && instance?.status !== "unknown") {
-      try {
-        sshPassword = await spin("Fetching one-time root password…", () => fetchAndSavePassword(instanceId), "Got one-time root password");
-      } catch (err) {
-        warn(`Could not fetch one-time password: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    if (!sshPassword) {
-      sshPassword = await password({ message: "Root one-time password", mask: "•", validate: (v) => v.trim() ? true : "Required." });
-    }
+    // Instances use one-time root-password auth (skip the API fetch when the
+    // instance couldn't be read — it likely belongs to another wallet).
+    sshPassword = await resolveSshPassword(sshPassword, instanceId, instance?.status !== "unknown");
 
     const remainingHours = remainingComputeHours(instance);
     if (remainingHours !== null && remainingHours >= 24) {
@@ -884,17 +840,7 @@ async function main() {
 
   // Password-only auth: resolve the one-time root password (response → env → fetch → prompt).
   if (!sshPassword) sshPassword = computeInstancePassword(instance) ?? "";
-  if (!sshPassword && !isUnset(process.env.COMPUTE_SSH_PASSWORD)) sshPassword = process.env.COMPUTE_SSH_PASSWORD!;
-  if (!sshPassword) {
-    try {
-      sshPassword = await spin("Fetching one-time root password…", () => fetchAndSavePassword(instanceId), "Got one-time root password");
-    } catch (err) {
-      warn(`Could not fetch one-time password: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  if (!sshPassword) {
-    sshPassword = await password({ message: "Root one-time password", mask: "•", validate: (v) => v.trim() ? true : "Required." });
-  }
+  sshPassword = await resolveSshPassword(sshPassword, instanceId, true);
 
   await spin("Waiting for SSH on port 22…", () => waitForPort(ip, 22, 120_000), "SSH port open");
 

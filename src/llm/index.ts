@@ -1,5 +1,6 @@
 import { config } from "../config.js";
 import { log } from "../log.js";
+import { envNumber } from "../util.js";
 import { recordLlm, recordSpend } from "../stats.js";
 import type { Prompts } from "./prompts.js";
 
@@ -24,7 +25,7 @@ let _prompts: Prompts | null = null;
 const LLM_URL = process.env.BANKR_LLM_URL || "https://llm.bankr.bot";
 // Bound on a single completion call, so a hung gateway request can't stall a
 // mention's reply pipeline forever.
-const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 120_000;
+const LLM_TIMEOUT_MS = envNumber("LLM_TIMEOUT_MS", 120_000);
 
 type ModelPricing = { input: number; output: number; cacheRead: number };
 

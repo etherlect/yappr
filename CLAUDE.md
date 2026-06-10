@@ -79,7 +79,7 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
 |------|------|
 | `yappr.ts` | Entry point — boot order and the two loops |
 | `index.ts` | Public API surface (`"yappr"`) that skills/hooks import — engine services + the X SDK + types |
-| `cli/` | The `yappr` bin + commands: `init` (scaffold `config/` + `.env`), `start`, `deploy`, `status` (live dashboard), `ssh`, `help`. Plus `cli/backup.ts` (DB snapshot/restore helpers) and `cli/ui.ts` (terminal styling) |
+| `cli/` | The `yappr` bin + commands: `init` (scaffold `config/` + `.env`), `start`, `deploy`, `status` (live dashboard), `ssh`, `help`. Plus the shared pieces: `cli/backup.ts` (DB snapshot/restore), `cli/charts.ts` (dashboard chart rendering — pure string-building), `cli/env.ts` (.env read/write for deploy), `cli/host-key.ts` (TOFU SSH host-key pinning → `.yappr-known-hosts`), `cli/ui.ts` (terminal styling) |
 | `config-loader.ts` | Loads `config/` from the project CWD (purely the user's add-ons — none essential); imports skill/hook modules natively, or user `.ts` via jiti (no build step) |
 | `config.ts` | Validated view of all env vars (the only place that reads `process.env`) |
 | `bankr.ts` | Single client for the Bankr REST API (sign, x402-pay, wallet) |
@@ -96,7 +96,7 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
 | `db.ts` | The one shared SQLite connection (`better-sqlite3`) → app DB `yappr.db` at `DB_PATH` (persisted outside `/yappr` on the server). Each feature creates its own tables against it |
 | `state.ts` | Durable agent state in the shared DB's `state` table: last mention processed |
 | `stats.ts` | Stats ledger on the shared DB: spend/earn/activity `events` + `meta` gauges + `summary()` (also returns trailing-window spend/earn for the dashboard's runway estimate, and the `chart` series — `day`/`all` cumulative + `byType` hourly — for the CHART panel). Inference spend is costed per-request in `llm/index.ts`. `stats-cli.ts` is its CLI (`summary` \| `backup`), used by the status dashboard over SSH |
-| `util.ts`, `log.ts` | `sleep`/`requireEnv`, and the pino logger |
+| `util.ts`, `log.ts` | `sleep`/`requireEnv`/`envNumber` (lenient numeric env, vs. `config.ts`'s strict `numeric`), and the pino logger |
 
 ## Conventions
 

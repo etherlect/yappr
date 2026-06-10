@@ -4,7 +4,7 @@ import { bankrApi } from "./bankr.js";
 import { createBankrSigner, createPayFetch } from "./x402.js";
 import { resolveEvmAddress } from "./compute.js";
 import { recordSpend } from "./stats.js";
-import { sleep } from "./util.js";
+import { sleep, envNumber } from "./util.js";
 
 let _walletAddress: `0x${string}` | null = null;
 let _payFetch: typeof fetch | null = null;
@@ -118,8 +118,8 @@ export function paidUsd(res: Response): number | undefined {
 // Fixed pause before each submit so rapid back-to-back treasury txs (dev cut → burn →
 // swap → extend) don't trip the Bankr signer's in-flight limit; and attempts/backoff for
 // retrying transient signer/provider errors (provider_inflight_limit, 5xx, timeouts, …).
-const SUBMIT_PAUSE_MS = Number(process.env.TX_SUBMIT_PAUSE_MS || 1500);
-const SUBMIT_MAX_ATTEMPTS = Number(process.env.TX_SUBMIT_MAX_ATTEMPTS || 5);
+const SUBMIT_PAUSE_MS = envNumber("TX_SUBMIT_PAUSE_MS", 1500);
+const SUBMIT_MAX_ATTEMPTS = envNumber("TX_SUBMIT_MAX_ATTEMPTS", 5);
 
 export async function submitTx(to: string, data: string): Promise<string> {
   if (config.treasuryDryRun) {

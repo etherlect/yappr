@@ -7,6 +7,9 @@ import { config } from "../config.js";
 import { log } from "../log.js";
 import { ERC20_ABI, WETH_ABI, UNISWAP_ROUTER_ABI } from "./abi.js";
 
+// The wallet's treasury-relevant holdings, all in wei/atomic units.
+export type TreasuryBalances = { token: bigint; weth: bigint; usdc: bigint; eth: bigint };
+
 export interface Treasury {
   claimableFees(): Promise<{ token0: string; token1: string; hasClaimable: boolean }>;
   claimFees(): Promise<{ token: bigint; weth: bigint }>;
@@ -16,7 +19,7 @@ export interface Treasury {
   swapWethToUsdc(amount: bigint): Promise<string>;
   extendCompute(): Promise<void>;
   computeExpiry(): Promise<Date | null>;
-  balances(): Promise<{ token: bigint; weth: bigint; usdc: bigint; eth: bigint }>;
+  balances(): Promise<TreasuryBalances>;
   lifetimeEarned(): Promise<number>;
 }
 
