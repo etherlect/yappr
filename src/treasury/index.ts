@@ -38,11 +38,12 @@ type CreatorFeesResponse = {
     tokenAddress: string;
     claimable?: { token0: string; token1: string };
   }>;
-  // All-time creator fees earned for this launch, denominated in WETH by Bankr.
+  // All-time gross creator fees earned for this launch, in WETH. Can be populated
+  // while `totals` below are 0 (fees accrued then left the claimable bucket).
   lifetimeEarnedWeth?: string;
-  // WETH-side fee totals: `claimedWeth` is realized (already claimed), `claimableWeth`
-  // is pending. Their sum is the all-time WETH the creator position has earned —
-  // unlike `lifetimeEarnedWeth`, which Bankr reports as 0 until fees are claimed.
+  // WETH-side fee totals: `claimedWeth` is realized (Bankr-tracked claims),
+  // `claimableWeth` is currently pending. `lifetimeEarned()` adds `claimableWeth`
+  // to `lifetimeEarnedWeth` to include fees not yet rolled into the lifetime figure.
   totals?: { claimedWeth?: string; claimableWeth?: string };
 };
 
@@ -202,20 +203,19 @@ export function createBankrTreasury(): Treasury {
       }
     },
 
-    // All-time creator fees earned (WETH), from Bankr's fees endpoint. We use
-    // claimed + claimable WETH (the `totals`) rather than `lifetimeEarnedWeth`, which
-    // Bankr reports as 0 until fees are actually claimed — so this reflects fees the
-    // moment they accrue and stays monotonic across claims. Read-only (no payment);
-    // polled on a timer to feed the stats ledger. (WETH side only — the token-side fee
-    // isn't valued in WETH by this endpoint.)
+    // All-time gross creator fees earned (WETH), from Bankr's fees endpoint:
+    // `lifetimeEarnedWeth` (fees that have left the claimable bucket — claimed +
+    // swapped) plus `totals.claimableWeth` (fees pending right now, not yet in
+    // `lifetimeEarnedWeth`). Summing the two covers the full lifetime as fees flow
+    // pending → claimed. Read-only (no payment); polled on a timer to feed the
+    // stats ledger. (WETH side only — the token-side fee isn't valued in WETH here.)
     async lifetimeEarned() {
       const res = await bankrApi<CreatorFeesResponse>(
         config.bankrApiKey,
         `/token-launches/${config.tokenAddress}/fees`,
       );
-      const t = res.totals;
-      if (t) return (parseFloat(t.claimedWeth ?? "0") || 0) + (parseFloat(t.claimableWeth ?? "0") || 0);
-      return parseFloat(res.lifetimeEarnedWeth ?? "0") || 0;
+      const num = (s?: string) => parseFloat(s ?? "0") || 0;
+      return num(res.lifetimeEarnedWeth) + num(res.totals?.claimableWeth);
     },
 
     async balances() {
