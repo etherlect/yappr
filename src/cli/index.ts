@@ -26,27 +26,38 @@ async function delegate(path: string): Promise<void> {
 
 const cmd = process.argv[2];
 
-switch (cmd) {
-  case "init": {
-    const { runInit } = await import("./init.js");
-    await runInit(process.argv[3]);
-    break;
+try {
+  switch (cmd) {
+    case "init": {
+      const { runInit } = await import("./init.js");
+      await runInit(process.argv[3]);
+      break;
+    }
+    case "start":
+      // Booting the agent is a side effect of importing its entry module.
+      await import("../yappr.js");
+      break;
+    case "deploy": await delegate("./deploy.js"); break;
+    case "status": await delegate("./status.js"); break;
+    case "ssh": await delegate("./ssh.js"); break;
+    case undefined:
+    case "help":
+    case "--help":
+    case "-h":
+      help();
+      break;
+    default:
+      console.error(`yappr: unknown command "${cmd}"\n`);
+      help();
+      process.exit(1);
   }
-  case "start":
-    // Booting the agent is a side effect of importing its entry module.
-    await import("../yappr.js");
-    break;
-  case "deploy": await delegate("./deploy.js"); break;
-  case "status": await delegate("./status.js"); break;
-  case "ssh": await delegate("./ssh.js"); break;
-  case undefined:
-  case "help":
-  case "--help":
-  case "-h":
-    help();
-    break;
-  default:
-    console.error(`yappr: unknown command "${cmd}"\n`);
-    help();
-    process.exit(1);
+} catch (err: any) {
+  // Ctrl-C inside an inquirer prompt rejects with ExitPromptError — that's the
+  // user quitting, not a failure: exit quietly instead of dumping a stack trace.
+  if (err?.name === "ExitPromptError") {
+    console.log("\n  Aborted.");
+    process.exit(0);
+  }
+  console.error(`\n  ✗  ${err?.message ?? err}`);
+  process.exit(1);
 }

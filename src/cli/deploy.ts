@@ -25,7 +25,10 @@ import {
   waitForComputeIp,
   resolveEvmAddress,
 } from "../compute.js";
-import { dim, bold, green, yellow, red, accent, YAPPR_ART } from "./ui.js";
+import {
+  dim, bold, green, yellow, red, accent, border, YAPPR_LOGO,
+  kv as kvRow, fit, panel, sideBySide, centerRows,
+} from "./ui.js";
 import { isUnset, setEnvVar, setEnvVarInContent, removeEnvVarInContent } from "./env.js";
 import { runStatus } from "./status.js";
 import { latestLocalBackup, remoteFileExists, backupLabel, REMOTE_DB_PATH } from "./backup.js";
@@ -38,21 +41,44 @@ const execFileAsync = promisify(execFile);
 // pack the engine into a tarball the server installs.
 const ENGINE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
+// Panel width for the deploy chrome (banner, summary boxes) — match the terminal,
+// capped so the boxes stay readable on very wide windows.
+function uiWidth(): number {
+  return Math.max(48, Math.min((process.stdout.columns ?? 80) - 1, 78));
+}
+
+// Header: the bare logo art with the title floating beside it, vertically centred.
 function banner(subtitle: string) {
+  const logoW = 17; // raw logo art width (no box)
+  const h = YAPPR_LOGO.length;
+  const info = centerRows([
+    `${bold("YAPPR")} ${dim("—")} ${bold("Deploy")}`,
+    dim(subtitle),
+  ], h).map((line: string) => `  ${line}`);
   console.log("");
-  for (const line of YAPPR_ART) console.log(`  ${accent(line)}`);
-  console.log("");
-  console.log(`  ${dim(subtitle)}`);
+  // fit() each logo row to a fixed width so the text column lines up exactly.
+  for (const row of sideBySide(YAPPR_LOGO.map((l) => "  " + fit(l, logoW)), logoW + 2, info, 0)) {
+    console.log(row);
+  }
 }
 
+// Step header styled like a dashboard panel title: bold caps in a logo-green rule.
 function step(n: number, total: number, label: string) {
+  const name = label.toUpperCase();
+  const counter = `step ${n}/${total}`;
+  const fill = Math.max(2, uiWidth() - name.length - counter.length - 10);
   console.log("");
-  console.log(`  ${accent("◆")}  ${bold(label)}  ${dim(`· step ${n}/${total}`)}`);
+  console.log(`  ${border("──")} ${bold(name)} ${border("─".repeat(fill))} ${dim(counter)} ${border("──")}`);
 }
 
-// Aligned dim-label key/value row (label padded on the raw string, then dimmed).
+// Aligned dim-label key/value row (the shared kv style from the status dashboard).
 function kv(key: string, value: string) {
-  console.log(`  ${dim(key.padEnd(9))}${value}`);
+  console.log(`  ${kvRow(key, value)}`);
+}
+
+// Print a status-style bordered panel at the deploy flow's 2-space indent.
+function printPanel(title: string, content: string[]) {
+  for (const line of panel(title, content, uiWidth() - 2)) console.log(`  ${line}`);
 }
 
 function ok(msg: string) { console.log(`  ${green("✓")}  ${msg}`); }
@@ -293,7 +319,7 @@ async function main() {
 
   const TOTAL_STEPS = 7;
 
-  banner("Self-sustaining x402 agent on X  ·  deploy");
+  banner("Self-sustaining AI agent on X");
 
   if (process.env.CLOUD_INSTANCE === "true") {
     console.error("\n  This looks like the deployed cloud instance.");
@@ -828,12 +854,14 @@ async function main() {
   const expiryFmt = expiry ? expiry.toLocaleString() : "—";
 
   console.log("");
-  kv("Instance", instanceId);
-  kv("IP", ip);
-  kv("Status", status === "active" ? green(status) : status);
-  kv("Plan", `${plan}  ${dim("·  " + region)}`);
-  kv("OS", os);
-  kv("Expires", expiryFmt);
+  printPanel("INSTANCE", [
+    kvRow("Instance", instanceId),
+    kvRow("IP", ip),
+    kvRow("Status", status === "active" ? green(status) : status),
+    kvRow("Plan", `${plan}  ${dim("·  " + region)}`),
+    kvRow("OS", os),
+    kvRow("Expires", expiryFmt),
+  ]);
 
   // ── Step 6: remote setup ──────────────────────────────────────────────────
   step(6, TOTAL_STEPS, "Installing agent on VPS");
@@ -963,20 +991,22 @@ async function main() {
   console.log("");
   console.log(`  ${green("✓")}  ${bold("Deployment complete")} ${dim("— your agent is live")}`);
   console.log("");
-  kv("Agent", accent(`@${handle}`));
-  kv("IP", ip);
-  kv("Wallet", address);
-  console.log("");
-  console.log(`  ${dim("The agent will:")}`);
-  for (const line of [
-    `Poll for @${handle} mentions every 20s`,
-    "Reply via Bankr LLM Gateway",
-    "Self-extend compute when < 24h remain",
-    "Auto top-up LLM credits when balance < $1",
-  ]) console.log(`    ${accent("·")}  ${dim(line)}`);
-  console.log("");
-  kv("Status", `${bold("yappr status")}   ${dim("live dashboard + logs")}`);
-  kv("SSH", `${bold("yappr ssh")}   ${dim(`(or ssh root@${ip})`)}`);
+  printPanel("AGENT", [
+    kvRow("Agent", accent(`@${handle}`)),
+    kvRow("IP", ip),
+    kvRow("Wallet", address),
+    "",
+    dim("The agent will:"),
+    ...[
+      `Poll for @${handle} mentions every 20s`,
+      "Reply via Bankr LLM Gateway",
+      "Self-extend compute when < 24h remain",
+      "Auto top-up LLM credits when balance < $1",
+    ].map((line) => `${accent("·")}  ${dim(line)}`),
+    "",
+    kvRow("Status", `${bold("yappr status")}   ${dim("live dashboard + logs")}`),
+    kvRow("SSH", `${bold("yappr ssh")}   ${dim(`(or ssh root@${ip})`)}`),
+  ]);
   console.log("");
 
   // Hand off to the live status dashboard (interactive terminals only). This

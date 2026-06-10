@@ -25,7 +25,10 @@ import {
   computeInstancePassword,
   remainingComputeHours,
 } from "../compute.js";
-import { dim, bold, green, yellow, red, cyan, accent, border, YAPPR_LOGO } from "./ui.js";
+import {
+  dim, bold, green, yellow, red, cyan, accent, border, YAPPR_LOGO,
+  fit, kv, panel, sideBySide, padRows, centerRows,
+} from "./ui.js";
 import { backupRemoteDb, backupLabel } from "./backup.js";
 import { hostKeyConfig } from "./host-key.js";
 import {
@@ -258,40 +261,6 @@ const fmtUsd = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDig
 // Spend is often sub-cent (calls cost ~$0.0025–$0.01), so show 4 dp until it tops $1.
 const fmtSpent = (n: number) => `$${n.toFixed(n >= 1 ? 2 : 4)}`;
 
-// ─── box / layout primitives (ANSI- and wide-char-aware via string-width) ──────
-
-// Fit a (possibly colored) string to an exact display width: pad with spaces or
-// truncate with an ellipsis, preserving ANSI codes.
-function fit(s: string, width: number): string {
-  const w = stringWidth(s);
-  if (w === width) return s;
-  if (w < width) return s + " ".repeat(width - w);
-  return cliTruncate(s, width, { position: "end", truncationCharacter: "~" });
-}
-
-// A labelled value row, with the label dimmed and padded for column alignment.
-const kv = (label: string, value: string, pad = 9) => dim(label.padEnd(pad)) + value;
-
-// Render a rounded-border panel of a fixed total width. Title sits in the top edge.
-function panel(title: string, content: string[], width: number): string[] {
-  const inner = width - 4; // "│ " + content + " │"
-  const fillLen = Math.max(0, width - 5 - stringWidth(title)); // ╭ ─ " title " ─*fill ╮ (ANSI-aware)
-  const top = border("┌─") + bold(` ${title} `) + border("─".repeat(fillLen) + "┐");
-  const bottom = border("└" + "─".repeat(width - 2) + "┘");
-  const body = content.map((line) => border("│") + " " + fit(line, inner) + "\x1b[0m " + border("│"));
-  return [top, ...body, bottom];
-}
-
-// Lay two equal-or-fixed-width panels next to each other.
-function sideBySide(a: string[], aw: number, b: string[], bw: number, gap = 1): string[] {
-  const h = Math.max(a.length, b.length);
-  const rows: string[] = [];
-  for (let i = 0; i < h; i++) {
-    rows.push((a[i] ?? " ".repeat(aw)) + " ".repeat(gap) + (b[i] ?? " ".repeat(bw)));
-  }
-  return rows;
-}
-
 // Space-between justification of segments to exactly `width` columns.
 function justify(segments: string[], width: number): string {
   if (segments.length === 1) return fit(segments[0], width);
@@ -374,17 +343,6 @@ type State = {
   // Which chart panel is shown (←/→): 0 = spent/earned 24h, 1 = hourly spent vs
   // earned, 2 = hourly expenses by category, 3 = spent/earned all-time.
   chartIndex: number;
-};
-
-// Pad a content array with blank rows so stacked panels share one height.
-const padRows = (lines: string[], n: number) => (lines.length >= n ? lines : [...lines, ...Array(n - lines.length).fill("")]);
-
-// Like padRows, but split the padding above/below so shorter info panels sit
-// vertically centred next to the taller logo panel.
-const centerRows = (lines: string[], n: number) => {
-  if (lines.length >= n) return lines;
-  const top = Math.floor((n - lines.length) / 2);
-  return [...Array(top).fill(""), ...lines, ...Array(n - lines.length - top).fill("")];
 };
 
 function buildFrame(state: State, cols: number, rows: number): string[] {
