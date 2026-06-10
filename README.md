@@ -45,13 +45,17 @@ The deploy script prompts for each of these if not already set in `.env`:
 | Var | Description |
 |-----|-------------|
 | `BANKR_API_KEY` | Bankr API key — non-read-only, "Wallet & Agent API" enabled, **no recipient restrictions** |
-| `TWITTER_AUTH_TOKEN` | X session cookie `auth_token` |
-| `TWITTER_CT0` | X CSRF token `ct0` |
+| `TWITTER_AUTH_TOKEN` | X session cookie `auth_token` — deploy can fetch it automatically via a browser login (see below) |
+| `TWITTER_CT0` | X CSRF token `ct0` — fetched together with `auth_token` by the browser login |
 | `TOKEN_ADDRESS` | Your agent's ERC20 token on Base (deployed via Bankr) |
 | `AGENT_HANDLE` | Your agent's Twitter handle (without @) |
 | `ADMIN_HANDLES` | Comma-separated handles that can invoke admin-only skills (without @) — optional, leave blank to disable |
 
 `COMPUTE_INSTANCE_ID` is written automatically by the deploy script.
+
+**Connecting the X account:** when the two Twitter cookies aren't set, `yappr deploy` offers two ways to connect:
+- **Log in via browser** (recommended) — opens x.com in your installed Chrome; you log in normally, deploy reads the resulting `auth_token` + `ct0` cookies, saves them to `.env`, closes the browser, and continues. Your password is only ever typed into x.com itself. The detected handle also pre-fills `AGENT_HANDLE`.
+- **Enter cookies manually** — paste the two cookie values yourself (from your browser's devtools).
 
 ### Optional env vars
 

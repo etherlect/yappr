@@ -79,7 +79,7 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
 |------|------|
 | `yappr.ts` | Entry point — boot order and the two loops |
 | `index.ts` | Public API surface (`"yappr"`) that skills/hooks import — engine services + the X SDK + types |
-| `cli/` | The `yappr` bin + commands: `init` (scaffold `config/` + `.env`), `start`, `deploy`, `status` (live dashboard), `ssh`, `help`. Plus the shared pieces: `cli/backup.ts` (DB snapshot/restore), `cli/charts.ts` (dashboard chart rendering — pure string-building), `cli/env.ts` (.env read/write for deploy), `cli/host-key.ts` (TOFU SSH host-key pinning → `.yappr-known-hosts`), `cli/ui.ts` (terminal styling) |
+| `cli/` | The `yappr` bin + commands: `init` (scaffold `config/` + `.env`), `start`, `deploy`, `status` (live dashboard), `ssh`, `help`. Plus the shared pieces: `cli/backup.ts` (DB snapshot/restore), `cli/charts.ts` (dashboard chart rendering — pure string-building), `cli/env.ts` (.env read/write for deploy), `cli/host-key.ts` (TOFU SSH host-key pinning → `.yappr-known-hosts`), `cli/ui.ts` (terminal styling + panel/kv layout primitives), `cli/x-login.ts` (browser-assisted X login: system Chrome via lazily-imported playwright-core → auth_token/ct0 cookies) |
 | `config-loader.ts` | Loads `config/` from the project CWD (purely the user's add-ons — none essential); imports skill/hook modules natively, or user `.ts` via jiti (no build step) |
 | `config.ts` | Validated view of all env vars (the only place that reads `process.env`) |
 | `bankr.ts` | Single client for the Bankr REST API (sign, x402-pay, wallet) |

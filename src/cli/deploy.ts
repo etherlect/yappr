@@ -30,6 +30,7 @@ import {
   kv as kvRow, fit, panel, sideBySide, centerRows,
 } from "./ui.js";
 import { isUnset, setEnvVar, setEnvVarInContent, removeEnvVarInContent } from "./env.js";
+import { connectXViaBrowser } from "./x-login.js";
 import { runStatus } from "./status.js";
 import { latestLocalBackup, remoteFileExists, backupLabel, REMOTE_DB_PATH } from "./backup.js";
 import { hostKeyConfig } from "./host-key.js";
@@ -379,8 +380,49 @@ async function main() {
     secret: true,
     validate: (v) => v.startsWith("bk_") || "Bankr keys start with 'bk_'.",
   });
-  await field("TWITTER_AUTH_TOKEN", "X/Twitter auth_token cookie", { required: true, secret: true });
-  await field("TWITTER_CT0", "X/Twitter ct0 cookie", { required: true, secret: true });
+  // X/Twitter session — the two cookies the agent posts with. Offer a browser
+  // login that grabs them automatically (like a normal "Connect X" flow), with
+  // manual cookie entry as the fallback.
+  if (!isUnset(process.env.TWITTER_AUTH_TOKEN) && !isUnset(process.env.TWITTER_CT0)) {
+    info("TWITTER_AUTH_TOKEN already set — skipping");
+    info("TWITTER_CT0 already set — skipping");
+  } else {
+    const method = await select({
+      message: "Connect the agent's X/Twitter account",
+      choices: [
+        { name: `Log in via browser  ${dim("opens x.com in Chrome and grabs the session cookies automatically")}`, value: "browser" },
+        { name: `Enter cookies manually  ${dim("paste auth_token + ct0 from your own browser")}`, value: "manual" },
+      ],
+    });
+
+    let connected = false;
+    if (method === "browser") {
+      try {
+        const creds = await spin(
+          "Waiting for you to log in to x.com in the Chrome window… (3 min timeout)",
+          () => connectXViaBrowser(),
+          "X session captured",
+        );
+        await setEnvVar(envPath, "TWITTER_AUTH_TOKEN", creds.authToken);
+        await setEnvVar(envPath, "TWITTER_CT0", creds.ct0);
+        ok(`Connected ${creds.username ? accent("@" + creds.username) : "X account"} — cookies saved to .env`);
+        // The connected account IS the agent's account (its cookies post the
+        // replies), so its handle is the right AGENT_HANDLE default.
+        if (creds.username && isUnset(process.env.AGENT_HANDLE)) {
+          await setEnvVar(envPath, "AGENT_HANDLE", creds.username);
+          ok(`AGENT_HANDLE saved: ${creds.username}`);
+        }
+        connected = true;
+      } catch (err) {
+        warn(`Browser connect failed: ${err instanceof Error ? err.message : String(err)}`);
+        info("Falling back to manual cookie entry.");
+      }
+    }
+    if (!connected) {
+      await field("TWITTER_AUTH_TOKEN", "X/Twitter auth_token cookie", { required: true, secret: true });
+      await field("TWITTER_CT0", "X/Twitter ct0 cookie", { required: true, secret: true });
+    }
+  }
   await field("TOKEN_ADDRESS", "Agent token address on Base", {
     required: true,
     validate: (v) => /^0x[a-fA-F0-9]{40}$/.test(v) || "Must be a 0x… 42-character address.",
