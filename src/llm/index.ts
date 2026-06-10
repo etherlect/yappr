@@ -118,7 +118,8 @@ export async function chat(
 
   if (!res.ok) {
     const body = await res.text();
-    log.error({ status: res.status, body, ms: Date.now() - t }, "LLM request failed");
+    // warn before throwing: the catch site logs the (counted) error — see log.ts.
+    log.warn({ status: res.status, body, ms: Date.now() - t }, "LLM request failed");
     throw new Error(`Bankr LLM error: ${res.status} ${body}`);
   }
 

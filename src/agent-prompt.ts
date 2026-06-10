@@ -31,10 +31,11 @@ export async function agentPrompt(prompt: string): Promise<string> {
       return job.response ?? "";
     }
     if (job.status === "failed") {
-      log.error({ jobId }, "agent-prompt job failed");
+      // warn before throwing: the catch site logs the (counted) error — see log.ts.
+      log.warn({ jobId }, "agent-prompt job failed");
       throw new Error(`Bankr agent job failed: ${job.response ?? "unknown"}`);
     }
   }
-  log.error({ jobId }, "agent-prompt job timed out");
+  log.warn({ jobId }, "agent-prompt job timed out");
   throw new Error(`Bankr agent job timed out (jobId=${jobId})`);
 }

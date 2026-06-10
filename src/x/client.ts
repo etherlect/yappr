@@ -48,7 +48,8 @@ async function get<T>(path: string, params: Record<string, string | number | und
   const res = await payFetch(buildUrl(path, params));
   if (!res.ok) {
     const body = await res.text();
-    log.error({ path, status: res.status, ms: Date.now() - t }, `x-api GET ${path} failed`);
+    // warn before throwing: the catch site logs the (counted) error — see log.ts.
+    log.warn({ path, status: res.status, ms: Date.now() - t }, `x-api GET ${path} failed`);
     throw new Error(`GET ${path} failed: ${res.status} ${body}`);
   }
   log.info({ path, status: res.status, ms: Date.now() - t, usd: paidUsd(res) }, `x-api GET ${path} ok`);
@@ -78,7 +79,7 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<T> 
       const json = await res.json().catch(() => undefined);
       const apiErrors = (json as any)?.errors ?? (json as any)?.data?.errors;
       if (Array.isArray(apiErrors) && apiErrors.length > 0) {
-        log.error({ path, status: res.status, ms: Date.now() - t, errors: apiErrors }, `x-api POST ${path} returned errors`);
+        log.warn({ path, status: res.status, ms: Date.now() - t, errors: apiErrors }, `x-api POST ${path} returned errors`);
         throw new Error(`POST ${path} failed: ${JSON.stringify(apiErrors)}`);
       }
       // Log the raw twit.sh response body (e.g. the created tweet on POST /tweets).
@@ -91,7 +92,7 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<T> 
       await sleep(attempt * 1000);
       continue;
     }
-    log.error({ path, status: res.status, ms: Date.now() - t, body: text }, `x-api POST ${path} failed`);
+    log.warn({ path, status: res.status, ms: Date.now() - t, body: text }, `x-api POST ${path} failed`);
     throw new Error(`POST ${path} failed: ${res.status} ${text}`);
   }
   throw new Error(`POST ${path} exhausted retries`);
@@ -104,7 +105,7 @@ async function del<T>(path: string, params: Record<string, string | number | und
   const res = await payFetch(buildUrl(path, all), { method: "DELETE" });
   if (!res.ok) {
     const body = await res.text();
-    log.error({ path, status: res.status, ms: Date.now() - t }, `x-api DELETE ${path} failed`);
+    log.warn({ path, status: res.status, ms: Date.now() - t }, `x-api DELETE ${path} failed`);
     throw new Error(`DELETE ${path} failed: ${res.status} ${body}`);
   }
   log.info({ path, status: res.status, ms: Date.now() - t, usd: paidUsd(res) }, `x-api DELETE ${path} ok`);

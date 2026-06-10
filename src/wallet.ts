@@ -95,7 +95,10 @@ export async function payFetch(input: RequestInfo | URL, init: RequestInit = {})
   // line that's actually shown, so the amount appears next to the call itself.
   const isMentions = url.includes("/tweets/mentions");
   const safeUrl = redactUrl(url);
-  if (!res.ok) log.error({ url: safeUrl, method, status: res.status }, "x402 payFetch failed");
+  // warn, not error: this layer rethrows nothing itself but every caller throws on
+  // !res.ok and the failure is logged as ONE error where it's finally handled —
+  // logging error here too would count a single failure 2-3× in the stats ledger.
+  if (!res.ok) log.warn({ url: safeUrl, method, status: res.status }, "x402 payFetch failed");
   else if (!isMentions) log.info({ url: safeUrl, method, status: res.status }, "x402 payFetch ok");
 
   // Every x402 payment funnels through here, so it's the one place to record spend
