@@ -23,14 +23,17 @@ export type Summary = {
   errors: number;
   spentUsd: number;
   spentByType: Record<SpendType, number>;
+  // All-time gross creator fees (WETH from Bankr). The dev cut is part of this
+  // revenue, not subtracted; `devWeth` below breaks out how much went to the dev.
   earnedWeth: number;
-  // All-time WETH paid out to the dev address (dev fee), cumulative.
+  // All-time WETH paid out to the dev address (dev fee), cumulative — a breakdown of
+  // `earnedWeth` (already included in it), surfaced on its own as "Dev rev".
   devWeth: number;
   // Trailing-window figures for the runway estimate (see status dashboard). The window
   // is the last RATE_WINDOW_MS, clamped to the agent's age. `spentUsdWindow` is total USD
   // spend; `inferenceUsdWindow` is the LLM (credit-funded) slice of it, so the USDC-funded
-  // burn (x-api + compute) is the difference. `earnedWethWindow` is WETH (converted with
-  // the live ETH price on the dashboard).
+  // burn (x-api + compute) is the difference. `earnedWethWindow` is gross WETH (converted
+  // with the live ETH price on the dashboard).
   spentUsdWindow: number;
   inferenceUsdWindow: number;
   earnedWethWindow: number;
@@ -265,6 +268,9 @@ export function summary(): Summary {
     const all = buildSeries(d, firstDataMs, chartNow);
     const byType = buildHourlyByType(d);
 
+    // `earnedWeth`/`earnedWethWindow` are GROSS creator fees (the dev cut is part of
+    // this revenue, not subtracted). `devWeth` is surfaced separately as a breakdown
+    // ("Dev rev") of how much of that gross was routed to the dev address.
     return {
       mentions: agg.mentions, replies: agg.replies, llm: agg.llm, warns: agg.warns, errors: agg.errors,
       spentUsd: agg.spentUsd, spentByType,
