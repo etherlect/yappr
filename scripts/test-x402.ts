@@ -3,10 +3,7 @@ import "dotenv/config";
 import { bankrApi } from "../src/bankr.js";
 import { createBankrSigner, createPayFetch } from "../src/x402.js";
 
-// const URL = "https://x402.twit.sh/users/by/username?username=elonmusk"; // route that settles
-// The /tweets/mentions route the poller uses (the one failing CDP settle). auth_token/ct0
-// come from the instance .env (loaded via DOTENV_CONFIG_PATH), same as the running agent.
-const URL = `https://x402.twit.sh/tweets/mentions?auth_token=${process.env.TWITTER_AUTH_TOKEN}&ct0=${process.env.TWITTER_CT0}`;
+const URL = "https://x402.twit.sh/users/by/username?username=elonmusk";
 
 // Logging fetch passed as BASE to wrapFetchWithPayment, so every request
 // (initial 402 probe AND payment retry) flows through here.
