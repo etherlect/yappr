@@ -47,17 +47,16 @@ export async function runTreasuryCycle(treasury: Treasury, log: Logger): Promise
   };
 
   try {
+    log.info("treasury step: reading wallet balances");
     const balances = await treasury.balances();
+    log.info({
+      token: formatUnits(balances.token, 18),
+      weth: formatUnits(balances.weth, 18),
+      usdc: formatUnits(balances.usdc, 6),
+      eth: formatUnits(balances.eth, 18),
+      dryRun: config.treasuryDryRun || undefined,
+    }, "treasury balances");
     await runOnBeforeClaim(balances);
-
-    if (config.treasuryDryRun) {
-      log.info({
-        token: balances.token.toString(),
-        weth: balances.weth.toString(),
-        usdc: balances.usdc.toString(),
-        eth: balances.eth.toString(),
-      }, "[DRY RUN] treasury balances");
-    }
 
     // Only claim when there's actually something to collect — the claim is an
     // on-chain tx that costs gas even when no fees have accrued. On a failed check
@@ -65,27 +64,34 @@ export async function runTreasuryCycle(treasury: Treasury, log: Logger): Promise
     let token = 0n;
     let weth = 0n;
     let shouldClaim = true;
+    log.info("treasury step: checking claimable fees");
     try {
       const claimable = await treasury.claimableFees();
       shouldClaim = claimable.hasClaimable;
+      log.info({ token0: claimable.token0, token1: claimable.token1, hasClaimable: claimable.hasClaimable }, "claimable fees");
       if (!shouldClaim) {
-        log.info({ token0: claimable.token0, token1: claimable.token1 }, "no unclaimed fees — skipping claim this cycle");
+        log.info("no unclaimed fees — skipping claim this cycle");
       }
     } catch (err) {
       log.warn({ err }, "claimable-fee check failed — attempting claim anyway");
     }
 
     if (shouldClaim) {
+      log.info("treasury step: claiming fees");
       ({ token, weth } = await treasury.claimFees());
       result.tokenClaimed = token;
       result.wethClaimed = weth;
-      log.info({ token: token.toString(), weth: weth.toString() }, "fees claimed");
+      log.info({ token: formatUnits(token, 18), weth: formatUnits(weth, 18) }, "fees claimed");
     }
 
     // Dev fee — send a cut of each claimed asset to the dev address. The cut is
     // computed on the total amount claimed this cycle, before burn/swap.
     let wethRemaining = weth;
-    if (config.devAddress) {
+    if (token === 0n && weth === 0n) {
+      log.info("nothing claimed this cycle — skipping dev cut, burn and swap");
+    }
+    if (config.devAddress && (token > 0n || weth > 0n)) {
+      log.info("treasury step: dev cut");
       if (config.devTokenBps > 0 && token > 0n) {
         const devToken = (token * BigInt(config.devTokenBps)) / 10000n;
         if (devToken > 0n) {
@@ -112,6 +118,7 @@ export async function runTreasuryCycle(treasury: Treasury, log: Logger): Promise
     if (token > 0n) {
       const burnAmount = (token * BigInt(config.burnBps)) / 10000n;
       if (burnAmount > 0n) {
+        log.info({ burnAmount: formatUnits(burnAmount, 18) }, "treasury step: burning token");
         await runOnSwap("burn", burnAmount);
         const txHash = await treasury.burnToken(burnAmount);
         result.tokenBurned = burnAmount;
@@ -132,6 +139,7 @@ export async function runTreasuryCycle(treasury: Treasury, log: Logger): Promise
       }
 
       if (wethToSwap > 0n) {
+        log.info({ weth: formatUnits(wethToSwap, 18) }, "treasury step: swapping WETH to USDC");
         await runOnSwap("swap", wethToSwap);
         const txHash = await treasury.swapWethToUsdc(wethToSwap);
         result.wethSwapped = wethToSwap;
@@ -141,6 +149,7 @@ export async function runTreasuryCycle(treasury: Treasury, log: Logger): Promise
     }
 
     if (config.computeInstanceId) {
+      log.info("treasury step: checking compute expiry");
       const expiry = await treasury.computeExpiry();
       if (!expiry) {
         // Unknown expiry → do NOT buy. Extending on a failed lookup would silently

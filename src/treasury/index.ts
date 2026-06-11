@@ -5,6 +5,7 @@ import { bankrApi } from "../bankr.js";
 import { fetchComputeInstance, computeInstanceExpiry } from "../compute.js";
 import { config } from "../config.js";
 import { log } from "../log.js";
+import { sleep, envNumber } from "../util.js";
 import { ERC20_ABI, WETH_ABI, UNISWAP_ROUTER_ABI } from "./abi.js";
 
 // The wallet's treasury-relevant holdings, all in wei/atomic units.
@@ -53,6 +54,31 @@ function erc20Balance(token: `0x${string}`, owner: `0x${string}`): Promise<bigin
   }) as Promise<bigint>;
 }
 
+// Retry a read-only step with exponential backoff (2s → 4s → 8s → 16s). The public
+// Base RPC rate-limits bursts (seen as "over rate limit" eth_call failures), and a
+// transient read failure must never abort a cycle that has already moved money.
+// Only ever wrap reads — never claim/submit calls.
+const READ_ATTEMPTS = envNumber("TREASURY_READ_ATTEMPTS", 5);
+async function readWithRetry<T>(step: string, fn: () => Promise<T>): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < READ_ATTEMPTS) {
+        const delayMs = 2000 * 2 ** (attempt - 1);
+        log.warn(
+          { step, attempt, maxAttempts: READ_ATTEMPTS, delayMs, err: err instanceof Error ? err.message : String(err) },
+          "treasury read failed — retrying after backoff",
+        );
+        await sleep(delayMs);
+      }
+    }
+  }
+  throw lastErr;
+}
+
 let _treasury: Treasury | null = null;
 
 export function getTreasury(): Treasury {
@@ -66,10 +92,10 @@ export function createBankrTreasury(): Treasury {
     // via Bankr's GET /token-launches/:addr/fees. The treasury cycle uses this to
     // skip the claim transaction — and its gas — when there's nothing to collect.
     async claimableFees() {
-      const res = await bankrApi<CreatorFeesResponse>(
+      const res = await readWithRetry("claimableFees", () => bankrApi<CreatorFeesResponse>(
         config.bankrApiKey,
         `/token-launches/${config.tokenAddress}/fees`,
-      );
+      ));
       const token =
         res.tokens?.find((t) => t.tokenAddress?.toLowerCase() === config.tokenAddress.toLowerCase())
         ?? res.tokens?.[0];
@@ -89,10 +115,11 @@ export function createBankrTreasury(): Treasury {
       // Measure the claim by diffing wallet balances before/after the on-chain
       // settlement — the claim endpoint returns only a tx hash, not amounts.
       const address = walletAddress();
-      const [tokenBefore, wethBefore] = await Promise.all([
+      log.info("treasury claimFees: reading pre-claim balances");
+      const [tokenBefore, wethBefore] = await readWithRetry("claimFees pre-claim balances", () => Promise.all([
         erc20Balance(config.tokenAddress, address),
         erc20Balance(WETH, address),
-      ]);
+      ]));
 
       log.info("treasury claimFees submitting");
       const { transactionHash } = await bankrApi<{ transactionHash: string }>(
@@ -100,16 +127,30 @@ export function createBankrTreasury(): Treasury {
         `/token-launches/${config.tokenAddress}/fees/claim`,
         { method: "POST", auth: "bearer", body: JSON.stringify({}) },
       );
-      await publicClient.waitForTransactionReceipt({ hash: transactionHash as `0x${string}` });
+      log.info({ txHash: transactionHash }, "treasury claimFees: waiting for confirmation");
+      await readWithRetry("claimFees receipt", () =>
+        publicClient.waitForTransactionReceipt({ hash: transactionHash as `0x${string}` }));
 
-      const [tokenAfter, wethAfter] = await Promise.all([
-        erc20Balance(config.tokenAddress, address),
-        erc20Balance(WETH, address),
-      ]);
-      const token = tokenAfter > tokenBefore ? tokenAfter - tokenBefore : 0n;
-      const weth = wethAfter > wethBefore ? wethAfter - wethBefore : 0n;
-      log.info({ txHash: transactionHash, token: token.toString(), weth: weth.toString() }, "treasury claimFees ok");
-      return { token, weth };
+      // Past this point the claim has settled on-chain. A failure to MEASURE it must
+      // not abort the cycle — degrade to zero amounts (this batch just won't be
+      // burned/swapped this cycle) and let the rest of the cycle run.
+      log.info("treasury claimFees: reading post-claim balances");
+      try {
+        const [tokenAfter, wethAfter] = await readWithRetry("claimFees post-claim balances", () => Promise.all([
+          erc20Balance(config.tokenAddress, address),
+          erc20Balance(WETH, address),
+        ]));
+        const token = tokenAfter > tokenBefore ? tokenAfter - tokenBefore : 0n;
+        const weth = wethAfter > wethBefore ? wethAfter - wethBefore : 0n;
+        log.info({ txHash: transactionHash, token: token.toString(), weth: weth.toString() }, "treasury claimFees ok");
+        return { token, weth };
+      } catch (err) {
+        log.error(
+          { txHash: transactionHash, err: err instanceof Error ? err.message : String(err) },
+          "treasury claimFees: claim settled but post-claim balance read failed — treating claimed amounts as 0 (no burn/swap this cycle)",
+        );
+        return { token: 0n, weth: 0n };
+      }
     },
 
     async burnToken(amount: bigint) {
@@ -153,6 +194,22 @@ export function createBankrTreasury(): Treasury {
         log.info({ amount: amount.toString() }, "treasury [dry run] swapWethToUsdc");
         return "0xdry";
       }
+      // The router pulls WETH via transferFrom, so it needs an allowance. Approve
+      // per-amount each swap (never an unlimited approval): check the current
+      // allowance first and only top it up when it's short.
+      const allowance = await readWithRetry("swap allowance", () => publicClient.readContract({
+        address: WETH, abi: ERC20_ABI, functionName: "allowance",
+        args: [walletAddress(), UNISWAP_ROUTER],
+      })) as bigint;
+      if (allowance < amount) {
+        log.info({ allowance: allowance.toString(), amount: amount.toString() }, "treasury swapWethToUsdc approving router");
+        const approveData = encodeFunctionData({
+          abi: ERC20_ABI, functionName: "approve", args: [UNISWAP_ROUTER, amount],
+        });
+        const approveTx = await submitTx(WETH, approveData);
+        log.info({ txHash: approveTx }, "treasury swapWethToUsdc approval ok");
+      }
+
       log.info({ amount: amount.toString() }, "treasury swapWethToUsdc submitting");
       const data = encodeFunctionData({
         abi: UNISWAP_ROUTER_ABI,
@@ -220,12 +277,12 @@ export function createBankrTreasury(): Treasury {
 
     async balances() {
       const address = walletAddress();
-      const [token, weth, usdc, eth] = await Promise.all([
+      const [token, weth, usdc, eth] = await readWithRetry("balances", () => Promise.all([
         erc20Balance(config.tokenAddress, address),
         erc20Balance(WETH, address),
         erc20Balance(USDC, address),
         publicClient.getBalance({ address }),
-      ]);
+      ]));
       return { token, weth, usdc, eth };
     },
   };
