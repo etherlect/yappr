@@ -35,9 +35,9 @@ source runners for engine dev.
 (throwaway test scripts) is excluded. Imports use `.js` extensions (NodeNext ESM);
 `tsx` resolves them to `.ts` in dev, and user `.ts` config loads via jiti at runtime.
 
-## Two loops
+## Three loops
 
-Everything runs from one process (`src/yappr.ts`), which starts two timers:
+Everything runs from one process (`src/yappr.ts`), which starts three timers:
 
 1. **Reply loop** — `reply/poller.ts` polls for new @mentions, then `reply/pipeline.ts`
    handles each one: gather thread context → gating (`reply/gating.ts`) → the agent
@@ -47,6 +47,11 @@ Everything runs from one process (`src/yappr.ts`), which starts two timers:
    claim only if there are any → optional dev cut → burn → keep a small ETH gas
    reserve → swap WETH→USDC → extend compute. This is what makes the agent
    self-funding. `treasury/index.ts` holds the on-chain calls.
+3. **Cron loop** — `cron/runner.ts` ticks every 30s over the `cron_jobs` table and
+   replays each due job's stored prompt through the same agent loop, sequentially
+   (privileges re-derived from `ADMIN_HANDLES` per run; results stored in the row,
+   never posted). Jobs are created/managed by a `config/skills/cron/` skill via the
+   store/validation API exported from `src/index.ts`.
 
 Boot also prefetches LLM pricing (`loadModelPricing`, for inference costing) and starts
 a minute timer polling all-time earnings (`treasury.lifetimeEarned` → `recordEarned`).
@@ -90,6 +95,7 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
 | `llm/` | LLM gateway client + prompt assembly from `config/context/`. Costs each completion from its token usage × per-model `/v1/models` pricing → records inference spend. The system-prompt date is hour-granular so the prompt stays prompt-cacheable across calls |
 | `reply/` | The reply loop: poller, pipeline, gating, agent reasoning loop |
 | `treasury/` | The treasury loop, on-chain calls, and ABIs |
+| `cron/` | The cron loop: `schedule.ts` (schedule grammar + IANA/DST next-run math), `store.ts` (`cron_jobs` table + CRUD), `runner.ts` (tick loop → `runAgentLoop`) |
 | `skills/` | Loader/registry/types for `config/skills/` |
 | `hooks/` | Loader/registry/types for `config/hooks/` |
 | `x/` | Full X/Twitter SDK over the x402 data endpoint (`client.ts`) + types |

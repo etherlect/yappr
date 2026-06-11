@@ -44,4 +44,21 @@ export const config = {
   devTokenBps: numeric("DEV_TOKEN_BPS", "0"),
   devWethBps: numeric("DEV_WETH_BPS", "0"),
   treasuryDryRun: optional("TREASURY_DRY_RUN", "false") === "true",
+
+  // ── Cron jobs (scheduled prompts, see src/cron/) ──
+  // How often the scheduler checks for due jobs. Cheap (one local SQLite read).
+  cronTickMs: numeric("CRON_TICK_MS", "30000"),
+  // Cap on ACTIVE jobs — each run costs inference + whatever paid skills it calls.
+  cronMaxJobs: numeric("CRON_MAX_JOBS", "20"),
+  // Per-creator cap under the global one — matters once the cron skill is opened
+  // to non-admins (one user must not be able to exhaust the pool).
+  cronMaxJobsPerUser: numeric("CRON_MAX_JOBS_PER_USER", "3"),
+  // Floor for interval schedules: every run spends money, so no sub-5-min loops.
+  cronMinIntervalMin: numeric("CRON_MIN_INTERVAL_MIN", "5"),
+  // Per-run cap — skills like `wallet` poll Bankr agent jobs for minutes, but a
+  // hung run must not stall the (sequential) scheduler forever.
+  cronRunTimeoutMs: numeric("CRON_RUN_TIMEOUT_MS", "300000"),
+  // Auto-pause a recurring job after this many consecutive failures, so a broken
+  // prompt can't drain credits indefinitely.
+  cronMaxConsecutiveFailures: numeric("CRON_MAX_CONSECUTIVE_FAILURES", "5"),
 } as const;

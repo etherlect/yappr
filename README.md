@@ -87,6 +87,12 @@ All have sensible defaults; set them in `.env` to override:
 | `TREASURY_DRY_RUN` | `false` | Log treasury/wallet writes without submitting anything |
 | `LLM_TIMEOUT_MS` | `120000` | Per-request timeout on LLM completions |
 | `DB_PATH` | `./yappr.db` | SQLite database location (the deploy sets `/var/lib/yappr/yappr.db` on the server) |
+| `CRON_TICK_MS` | `30000` | How often the cron scheduler checks for due jobs |
+| `CRON_MAX_JOBS` | `20` | Max active cron jobs in total |
+| `CRON_MAX_JOBS_PER_USER` | `3` | Max active cron jobs per creator |
+| `CRON_MIN_INTERVAL_MIN` | `5` | Shortest allowed "every N minutes" interval |
+| `CRON_RUN_TIMEOUT_MS` | `300000` | Per-run timeout on a cron job's agent loop |
+| `CRON_MAX_CONSECUTIVE_FAILURES` | `5` | Auto-pause a recurring job after this many consecutive failures |
 
 ## Commands
 
@@ -95,7 +101,7 @@ With `yappr` installed in your project (`npm i yappr`), run any command with `np
 | Command | What it does |
 |---------|--------------|
 | `npx yappr init [dir]` | Scaffold a new project — copies the starter `config/` (context, skills, hooks) and a `.env.example` into `dir` (default: current directory). Run once when setting up; never overwrites existing files. |
-| `npx yappr start` | Run the agent locally, loading `./config` and `./.env`. Starts both loops (reply poller + hourly treasury). Ctrl-C to stop. |
+| `npx yappr start` | Run the agent locally, loading `./config` and `./.env`. Starts all three loops (reply poller + hourly treasury + cron scheduler). Ctrl-C to stop. |
 | `npx yappr deploy` | Interactive deploy: prompts for any missing env vars (and saves them to `.env`), provisions or reuses an x402 compute instance, seeds LLM credits, uploads the engine + your `config/` + `.env`, starts the agent under pm2, then opens the dashboard. On a fresh instance it offers to restore your latest local DB backup. |
 | `npx yappr status [id]` | Live dashboard for the deployed instance over SSH (treasury, runway, activity, logs). Also pulls periodic DB backups while open. Optional `id` overrides `COMPUTE_INSTANCE_ID`. |
 | `npx yappr ssh [id]` | Open an interactive root shell on the deployed instance. Optional `id` overrides `COMPUTE_INSTANCE_ID`. |
@@ -173,6 +179,27 @@ export const hooks: AgentHooks = {
 ```
 
 Available hooks: `onMention`, `shouldReply`, `onBeforeInference`, `onAfterInference`, `onBeforeReply`, `onAfterReply`, `onBeforeClaim`, `onAfterClaim`, `onSwap`.
+
+## Cron jobs (scheduled prompts)
+
+The agent can run prompts on a schedule. A cron job stores a **self-contained instruction** ("send $10 of USDC to @wander") that the engine replays through the normal agent loop — same skills, same access rules — on its schedule. Jobs are created conversationally via the starter `cron` skill:
+
+> `@youragent send me $10 every day at 13:00 UTC` → the agent creates the job and confirms with its id and next run time.
+
+**Schedules** (the skill maps natural phrasing to these):
+- `every N minutes` — recurring interval (floor: `CRON_MIN_INTERVAL_MIN`)
+- `in N minutes` / `on <date> at <time>` — one-shot (spent after it runs)
+- `every day at HH:MM <timezone>` — daily at a wall-clock time; timezones are IANA names (`Europe/Paris`, `UTC`) and follow DST. A clock time **without** a timezone is rejected — the agent asks the user to specify one rather than guess.
+
+**Managing jobs** (also via mentions): "what cron jobs do I have scheduled?" (list), "remove cron 3", "pause/resume cron 3". Users only see and manage their **own** jobs (matched on their X user id); handles in `ADMIN_HANDLES` can manage all jobs and list everyone's (`scope=all`).
+
+**Execution semantics:**
+- Runs are **silent**: the agent's final reply is stored on the job (shown by `list`), never posted to X. If a job should post, its prompt must say so explicitly and use a posting skill.
+- Privileges are re-derived from `ADMIN_HANDLES` at **every run** — a demoted creator's jobs drop to public skills on the next tick; admin-only skills stay enforced in code.
+- At-most-once per slot: the job's clock advances *before* execution, so a crash can't double-fire a money-moving job. Recurring slots missed while the agent was down are skipped; overdue one-shots run late.
+- A recurring job that fails `CRON_MAX_CONSECUTIVE_FAILURES` times in a row is auto-paused so a broken prompt can't burn credits forever (`resume` re-arms it).
+
+The starter skill ships `access: admin`. To let anyone schedule jobs, flip it to `access: all` in `config/skills/cron/skill.md` — ownership checks and the per-user cap (`CRON_MAX_JOBS_PER_USER`) are already enforced in code. Remember every run costs inference (and whatever paid skills the prompt uses), so revisit the caps before opening it up.
 
 ## Economics
 

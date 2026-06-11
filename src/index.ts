@@ -13,6 +13,8 @@ export type { AgentHooks } from "./hooks/types.js";
 export type { Tweet, SearchResponse } from "./x/types.js";
 export type { Treasury, TreasuryBalances } from "./treasury/index.js";
 export type { TreasuryCycleResult } from "./treasury/cycle.js";
+export type { CronJob } from "./cron/store.js";
+export type { Schedule } from "./cron/schedule.js";
 
 // ── Engine services ──
 export { agentPrompt } from "./agent-prompt.js";
@@ -20,6 +22,11 @@ export { getTreasury } from "./treasury/index.js";
 export { log } from "./log.js";
 export { config } from "./config.js";
 export { payFetch, paidUsd, walletAddress } from "./wallet.js";
+
+// ── Cron jobs (scheduled prompts) — store/validation only; the runner loop is
+// engine-internal (started by yappr.ts), skills only manage the table ──
+export { addCronJob, listCronJobs, getCronJob, setCronJobEnabled, removeCronJob, describeSchedule } from "./cron/store.js";
+export { validateSchedule } from "./cron/schedule.js";
 
 // ── Full X/Twitter SDK (extractTweetId, getTweetById, postTweet, …) ──
 export * from "./x/client.js";

@@ -16,6 +16,7 @@ import { startTreasury, runTreasuryCycle } from "./treasury/cycle.js";
 import { loadHooks } from "./hooks/loader.js";
 import { loadSkills } from "./skills/loader.js";
 import { initSkills } from "./skills/registry.js";
+import { startCron } from "./cron/runner.js";
 
 const processOld = process.argv.includes("--process-old");
 
@@ -64,6 +65,10 @@ async function main() {
   const stopTreasury = startTreasury(treasury, log);
   log.info("treasury scheduler started");
 
+  // Cron scheduler — replays stored prompts (config/skills/cron creates them)
+  // through the agent loop on their schedule. See src/cron/runner.ts.
+  const stopCron = startCron(log);
+
   // Poll all-time earnings (creator fees, WETH) from Bankr and record into the
   // ledger. A cheap read-only call; default cadence one minute.
   const pollEarnings = async () => {
@@ -80,6 +85,7 @@ async function main() {
       log.info({ sig }, "shutting down");
       poller.stop();
       stopTreasury();
+      stopCron();
       clearTimeout(startupCycle);
       clearInterval(earningsTimer);
       process.exit(0);
