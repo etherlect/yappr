@@ -725,6 +725,8 @@ export async function runStatus(target: { ip: string; password?: string; handle?
   // Periodic stats backup (the on-launch + every-N-minutes path; quit() does its own
   // final one). Best-effort: result/failure is surfaced in the log feed, never thrown.
   const runBackup = async () => {
+    // The DB doesn't change while the bot is stopped — skip the snapshot.
+    if (state.pm2 && state.pm2.status !== "online") return;
     try { note(`database backed up → ${backupLabel(await backupRemoteDb(ssh))}`); }
     catch (err) { note(`database backup failed: ${err instanceof Error ? err.message : String(err)}`); }
   };
