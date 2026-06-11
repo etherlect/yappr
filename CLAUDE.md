@@ -60,11 +60,11 @@ logs) and derives three health metrics from the ledger + live on-chain balances:
 for inference — whichever empties first; cold-start and a downtime floor use the
 poll-cadence cost), **Sustainable** (window earnings ≥ window spend) and **Profitable**
 (all-time earnings − spend). The trailing-window figures come from `summary()`, which
-also returns `chart` series — cumulative spend/earn over the last 24h (`day`) and
-all-time (`all`), plus per-hour spend by category (`byType`, 24 clock-aligned buckets) —
-feeding an always-on CHART panel between ACTIVITY and LOGS with four views cycled by
-←/→: hourly spent-vs-earned bars, hourly expenses by category (stacked bars), and
-all-time / 24h spent-vs-earned line charts (`asciichart`).
+also returns `chart` series — cumulative spend/earn over the last 24h (`day`), plus
+per-hour spend by category (`byType`, 24 clock-aligned buckets) — feeding an always-on
+CHART panel between ACTIVITY and LOGS with three views cycled by ←/→: 24h spent-vs-earned
+line chart (`asciichart`), hourly spent-vs-earned bars, and hourly expenses by category
+(stacked bars).
 
 While open, the dashboard snapshots the server DB into `instance/backups/yappr-<date>.db`
 (one file per day, rolling 7) via `cli/backup.ts` — SQLite `VACUUM INTO` over SSH

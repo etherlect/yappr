@@ -38,14 +38,12 @@ export type Summary = {
   inferenceUsdWindow: number;
   earnedWethWindow: number;
   rateWindowHours: number;
-  // Cumulative spend (USD) + earnings (WETH) series for the dashboard's line charts, each
+  // Cumulative spend (USD) + earnings (WETH) series for the dashboard's line chart,
   // CHART_BUCKETS evenly spaced points (oldest→newest) over [startMs, endMs]. `day` is the
-  // last 24h (from max(now-24h, firstEvent)); `all` is the whole history (from the first
-  // event). Earnings stay in WETH; the dashboard converts with the live ETH price and uses
-  // startMs/endMs to label the x-axis.
+  // last 24h (from max(now-24h, firstEvent)). Earnings stay in WETH; the dashboard converts
+  // with the live ETH price and uses startMs/endMs to label the x-axis.
   chart: {
     day: { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number };
-    all: { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number };
     // Per-hour spend by type over the last 24h (24 buckets, clock-aligned, NOT cumulative)
     // for the stacked bar chart. startMs is the first bucket's (clock-hour) start.
     byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; earned: number[] };
@@ -223,7 +221,6 @@ export function summary(): Summary {
     spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0,
     chart: {
       day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 },
-      all: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 },
       byType: { startMs: 0, xapi: [], inference: [], compute: [], earned: [] },
     },
   };
@@ -261,11 +258,9 @@ export function summary(): Summary {
     const rateWindowHours = Math.max(0, (Date.now() - startMs) / 3_600_000);
 
     // Chart series for the dashboard: a 24h view (`day`, from startMs = max(now-24h,
-    // firstEvent)) and a whole-history view (`all`, from the first event) — both through now.
+    // firstEvent)) through now.
     const chartNow = Date.now();
-    const firstDataMs = firstTs ? Date.parse(firstTs) : chartNow;
     const day = buildSeries(d, startMs, chartNow);
-    const all = buildSeries(d, firstDataMs, chartNow);
     const byType = buildHourlyByType(d);
 
     // `earnedWeth`/`earnedWethWindow` are GROSS creator fees (the dev cut is part of
@@ -277,7 +272,7 @@ export function summary(): Summary {
       earnedWeth: getMeta("last_earned_weth") ?? 0, devWeth: agg.devWeth,
       spentUsdWindow: win.spentUsdWindow, inferenceUsdWindow: win.inferenceUsdWindow,
       earnedWethWindow: win.earnedWethWindow, rateWindowHours,
-      chart: { day, all, byType },
+      chart: { day, byType },
     };
   } catch {
     return empty;
