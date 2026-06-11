@@ -164,6 +164,57 @@ The agent loop calls handler skills as tools, one per turn, seeing each result b
 
 Copy one of the starter skills (e.g. `config/skills/x/`) to start, or add a new folder. `access: admin` skills are only invocable by handles in `ADMIN_HANDLES`, enforced in code regardless of the LLM's decision. Set `AGENT_MAX_STEPS` (default `4`) to control how many skill calls the loop may make before forcing a reply.
 
+### Storing data from skills & hooks
+
+Skills get persistent storage in the agent's own SQLite DB — **don't open your own
+files**: data in the shared DB lives at `DB_PATH` (outside the dir wiped on redeploy)
+and rides along in the `yappr status` rolling backups; a file next to your skill
+does neither.
+
+For the common case, `skillStore(namespace)` is a key/value store with zero SQL —
+e.g. a "remember that…" skill keeping per-user notes:
+
+```ts
+// config/skills/remember/handler.ts
+import { skillStore, type SkillHandler } from "yappr";
+
+const mem = skillStore("remember"); // namespace = your skill's folder name
+
+export const handler: SkillHandler = async (params, tweet) => {
+  const userId = tweet.author?.id; // key by id, not handle: stable across renames
+  if (!userId) return { text: "could not identify the asking user" };
+  if (params.action === "store") {
+    mem.set(`${userId}:${Date.now()}`, params.note ?? "");
+    return { text: `stored: "${params.note}"` };
+  }
+  const notes = mem.list(`${userId}:`).map((r) => r.value); // prefix scan
+  return notes.length ? { data: notes } : { text: "no stored notes" };
+};
+```
+
+All namespaces share one `skill_kv` table keyed on `(namespace, key)`; a store only
+ever sees its own namespace, so name it after your skill unless two extensions are
+deliberately sharing data. Everything is best-effort like the rest of the engine:
+if the DB can't be opened, reads return empty and writes no-op rather than crashing
+the agent.
+
+Need real columns instead of KV? `withSchema(ddl)` returns the shared
+`better-sqlite3` connection with your DDL applied (once per process) — the same
+mechanism engine features use. Prefix your tables `skill_<name>_` to stay clear of
+engine tables, and don't write to tables you don't own (`state`, `events`, `meta`,
+`cron_jobs` back the agent's state, stats and cron):
+
+```ts
+import { withSchema, type Database } from "yappr";
+
+const db = (): Database | null => withSchema(
+  "CREATE TABLE IF NOT EXISTS skill_remember_notes (user_id TEXT, note TEXT, created_at INTEGER)"
+);
+```
+
+Inspecting data is plain SQLite — locally or against a backup:
+`sqlite3 yappr.db "SELECT * FROM skill_kv WHERE ns='remember'"`.
+
 ### Hooks (`config/hooks/`)
 
 Drop any `.ts` file in `config/hooks/` that exports a `hooks` object — add logic without touching `src/`. See `config/hooks/example.ts` for all available hooks:

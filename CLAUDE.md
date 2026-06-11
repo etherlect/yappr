@@ -101,6 +101,7 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
 | `x/` | Full X/Twitter SDK over the x402 data endpoint (`client.ts`) + types |
 | `db.ts` | The one shared SQLite connection (`better-sqlite3`) → app DB `yappr.db` at `DB_PATH` (persisted outside `/yappr` on the server). Each feature creates its own tables against it |
 | `state.ts` | Durable agent state in the shared DB's `state` table: last mention processed |
+| `storage.ts` | Public storage API for skills/hooks: `skillStore(ns)` — namespaced KV over one shared `skill_kv` table (exported from `index.ts` together with `withSchema` + the `Database` type, for skills that need their own `skill_<name>_*` tables) |
 | `stats.ts` | Stats ledger on the shared DB: spend/earn/activity `events` + `meta` gauges + `summary()` (also returns trailing-window spend/earn for the dashboard's runway estimate, and the `chart` series — `day`/`all` cumulative + `byType` hourly — for the CHART panel). Inference spend is costed per-request in `llm/index.ts`. `stats-cli.ts` is its CLI (`summary` \| `backup`), used by the status dashboard over SSH |
 | `util.ts`, `log.ts` | `sleep`/`requireEnv`/`envNumber` (lenient numeric env, vs. `config.ts`'s strict `numeric`), and the pino logger |
 

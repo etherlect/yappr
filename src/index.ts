@@ -15,6 +15,10 @@ export type { Treasury, TreasuryBalances } from "./treasury/index.js";
 export type { TreasuryCycleResult } from "./treasury/cycle.js";
 export type { CronJob } from "./cron/store.js";
 export type { Schedule } from "./cron/schedule.js";
+export type { SkillStore, SkillStoreEntry } from "./storage.js";
+// The shared connection's handle type, so skill authors using withSchema() get
+// typechecking without depending on better-sqlite3 themselves.
+export type { Database } from "better-sqlite3";
 
 // ── Engine services ──
 export { agentPrompt } from "./agent-prompt.js";
@@ -22,6 +26,11 @@ export { getTreasury } from "./treasury/index.js";
 export { log } from "./log.js";
 export { config } from "./config.js";
 export { payFetch, paidUsd, walletAddress } from "./wallet.js";
+
+// ── Storage for skills/hooks — namespaced KV (skillStore) for the common case,
+// withSchema for skills that need their own tables in the shared DB ──
+export { skillStore } from "./storage.js";
+export { withSchema } from "./db.js";
 
 // ── Cron jobs (scheduled prompts) — store/validation only; the runner loop is
 // engine-internal (started by yappr.ts), skills only manage the table ──
