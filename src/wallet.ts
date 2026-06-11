@@ -1,6 +1,6 @@
 import { config } from "./config.js";
 import { log } from "./log.js";
-import { bankrApi } from "./bankr.js";
+import { bankrApi, bankrX402Pay, type BankrX402PayResult } from "./bankr.js";
 import { createBankrSigner, createPayFetch } from "./x402.js";
 import { resolveEvmAddress } from "./compute.js";
 import { recordSpend } from "./stats.js";
@@ -84,10 +84,86 @@ function paidFetch(): typeof fetch {
   return _payFetch;
 }
 
+// Safety cap on what the /wallet/x402-pay fallback may authorize per call — used
+// verbatim when the 402's payment requirements can't be parsed, and as a ceiling
+// when they can (guards against an endpoint demanding an absurd amount).
+const FALLBACK_MAX_USD = envNumber("X402_FALLBACK_MAX_USD", 5);
+const FALLBACK_ATTEMPTS = 2;
+
+// USD price asked by a 402 response: the base64 payment-required header (Bankr
+// style) or the JSON body (Coinbase x402 style), whichever parses.
+async function requiredUsd(res: Response): Promise<number | undefined> {
+  let req: { accepts?: Array<{ maxAmountRequired?: string; amount?: string }> } | undefined;
+  const raw = res.headers.get("payment-required") ?? res.headers.get("x-payment-required");
+  if (raw) {
+    try { req = JSON.parse(Buffer.from(raw, "base64").toString("utf8")); } catch { /* try body */ }
+  }
+  if (!req) {
+    try { req = await res.clone().json() as typeof req; } catch { return undefined; }
+  }
+  const accept = req?.accepts?.[0];
+  const atomic = accept?.maxAmountRequired ?? accept?.amount;
+  const n = Number(atomic);
+  return atomic != null && Number.isFinite(n) ? n / 1e6 : undefined;
+}
+
+// Repackage a /wallet/x402-pay gateway result as a Response so callers see the
+// same shape as the client-side path, including the paid amount for paidUsd().
+function gatewayResponse(result: BankrX402PayResult): Response {
+  const body = typeof result.response === "string" ? result.response : JSON.stringify(result.response ?? null);
+  const res = new Response(body, {
+    status: result.status || (result.success ? 200 : 402),
+    headers: typeof result.response === "string" ? undefined : { "Content-Type": "application/json" },
+  });
+  if (result.paymentMade?.amountUsd) {
+    _paidAtomic.set(res, BigInt(Math.round(result.paymentMade.amountUsd * 1e6)));
+  }
+  return res;
+}
+
 export async function payFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   const url = requestUrl(input);
   const method = (init.method ?? "GET").toUpperCase();
-  const res = await paidFetch()(input, init);
+
+  let res: Response | undefined;
+  let clientErr: unknown;
+  try {
+    res = await paidFetch()(input, init);
+  } catch (err) {
+    clientErr = err;
+  }
+
+  // Fallback: a 402 left after the client-side payment retry (or a thrown payment
+  // error) is usually Bankr having EIP-7702-delegated the wallet to a smart account
+  // after a server-side op (transfer/swap/fee claim) — the EOA then has code, USDC
+  // validates EIP-3009 signatures via ERC-1271 on the delegate, and the plain
+  // /wallet/sign signature is rejected. Bankr's /wallet/x402-pay gateway clears the
+  // delegation and pays in one call, so route the same request through it.
+  if (!res || res.status === 402) {
+    const maxUsd = Math.min((res && (await requiredUsd(res))) ?? FALLBACK_MAX_USD, FALLBACK_MAX_USD);
+    log.warn(
+      { url: redactUrl(url), method, status: res?.status, maxUsd, err: clientErr instanceof Error ? clientErr.message : clientErr },
+      "x402 client-side payment failed — falling back to Bankr /wallet/x402-pay",
+    );
+    for (let attempt = 1; attempt <= FALLBACK_ATTEMPTS; attempt++) {
+      try {
+        const result = await bankrX402Pay(
+          config.bankrApiKey, url, method as "GET" | "POST" | "PUT" | "DELETE",
+          typeof init.body === "string" ? init.body : undefined, maxUsd,
+        );
+        if (result.success) {
+          res = gatewayResponse(result);
+          break;
+        }
+        log.warn({ url: redactUrl(url), attempt, status: result.status, err: result.error }, "x402-pay fallback failed");
+      } catch (err) {
+        log.warn({ url: redactUrl(url), attempt, err: err instanceof Error ? err.message : String(err) }, "x402-pay fallback errored");
+      }
+    }
+    // Both paths exhausted: surface the original client-side failure — the 402
+    // response if there was one, otherwise the thrown error.
+    if (!res) throw clientErr;
+  }
 
   // /tweets/mentions is polled constantly — skip its success log to keep logs
   // clean. Failures are always logged. The per-call USD cost is captured per
