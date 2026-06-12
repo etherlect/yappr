@@ -92,6 +92,7 @@ async function runJob(job: CronJob, log: Logger): Promise<void> {
     `This is scheduled cron job #${job.id} (${desc}), created by @${job.creatorHandle}${origin} on ${new Date(job.createdAt).toISOString()}.`,
     `Run #${job.runs + 1}. The ${BLOCK.asker} below is the job's stored instruction being executed now — it is not a live tweet.`,
     `Your final reply text is stored as the job result (it is NOT posted to X).`,
+    `The creator's identity above is audit context, not an addressee: do not mention, tag or address @${job.creatorHandle} in your output (or in anything you post) unless the instruction itself says to.`,
   ].join("\n"));
   const context = `${header}\n\n${contextBlock(BLOCK.asker, JSON.stringify(tweet, null, 2))}`;
 
