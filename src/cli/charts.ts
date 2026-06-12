@@ -5,26 +5,24 @@
 // (see scripts/chart-equivalence.ts for the bar-renderer fuzz check).
 
 import * as asciichart from "asciichart";
-import { dim } from "./ui.js";
+import { dim, chartRgb } from "./ui.js";
 import { envNumber } from "../util.js";
 
-// Chart line colors (raw ANSI, fed to asciichart). Spend = red; earned = the
-// cyan the rest of the TUI uses.
-// Spent / earned as truecolor RGB triples — used by the stacked spent-vs-earned
-// bar chart (the boundary cell needs an fg AND bg color) and its legend.
-// CHART_SPEND/EARN are the escape-sequence forms the line charts feed to asciichart.
-export const SPENT_RGB = "224;71;71", EARN_RGB = "0;188;212";
-const CHART_SPEND = `\x1b[38;2;${SPENT_RGB}m`;
-const CHART_EARN = `\x1b[38;2;${EARN_RGB}m`; // cyan, matching the "earned" legend
+// Chart colors come from the current ui.ts theme (chartRgb()) as truecolor RGB
+// triples — used by the stacked bar charts (the boundary cell needs an fg AND a
+// bg color), the legends, and (escape-wrapped) the asciichart line charts.
+// Resolved lazily per render, so the TUI's live theme toggle applies here too.
+export const SPENT_RGB = () => chartRgb().spent;
+export const EARN_RGB = () => chartRgb().earn;
 
 // Plot rows for the spent/earned line charts. asciichart draws height+1 rows, so 8 → 9
 // rows + 1 axis = 10 content lines, matching the hourly bar chart (H=9 bars + 1 axis).
 // Override with STATUS_CHART_HEIGHT. (1-decimal y labels keep the rows distinct.)
 const LINE_CHART_HEIGHT = Math.max(3, envNumber("STATUS_CHART_HEIGHT", 8));
 
-// Expense-category colors as truecolor RGB triples (so they're stable across themes and
-// usable as a half-block cell background). Shared by the bar chart and its legend.
-export const CAT_RGB = { xapi: "0;188;212", inference: "215;119;87", compute: "234;179;8" } as const;
+// Expense-category colors as truecolor RGB triples, from the current theme.
+// Shared by the bar chart and its legend.
+export const CAT_RGB = () => ({ xapi: chartRgb().xapi, inference: chartRgb().inference, compute: chartRgb().compute });
 export const catColor = (rgb: string) => (s: string) => `\x1b[38;2;${rgb}m${s}\x1b[0m`;
 
 export type ChartSeries = { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number };
@@ -112,7 +110,8 @@ export function renderLineChart(cols: number, series: ChartSeries, ethUsd: numbe
   const spend = fitSeries(series.spendUsd, dataCols);
   const earn = ethUsd != null ? fitSeries(series.earnedWeth.map((v) => v * ethUsd), dataCols) : null;
   const seriesArr = earn && earn.length === spend.length ? [spend, earn] : [spend];
-  const colors = seriesArr.length === 2 ? [CHART_SPEND, CHART_EARN] : [CHART_SPEND];
+  const spendEsc = `\x1b[38;2;${SPENT_RGB()}m`, earnEsc = `\x1b[38;2;${EARN_RGB()}m`;
+  const colors = seriesArr.length === 2 ? [spendEsc, earnEsc] : [spendEsc];
   const lines = asciichart.plot(seriesArr, { height: LINE_CHART_HEIGHT, colors, format: (x: number) => fmtMoney(x).padEnd(7) }).split("\n");
   lines.push(dim(adaptiveTimeAxis(LABEL_OFFSET, w, windowStart, windowEnd))); // x-axis spans the full window
   return lines;
@@ -190,10 +189,11 @@ function renderStackedBars(cols: number, startMs: number, layers: Array<{ values
 
 // Per-hour spend stacked by type: x-api / inference / compute, bottom-up.
 export function renderHourlyBars(cols: number, byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[] }): string[] {
+  const cat = CAT_RGB();
   return renderStackedBars(cols, byType.startMs, [
-    { values: byType.xapi, rgb: CAT_RGB.xapi },
-    { values: byType.inference, rgb: CAT_RGB.inference },
-    { values: byType.compute, rgb: CAT_RGB.compute },
+    { values: byType.xapi, rgb: cat.xapi },
+    { values: byType.inference, rgb: cat.inference },
+    { values: byType.compute, rgb: cat.compute },
   ]);
 }
 
@@ -204,7 +204,7 @@ export function renderHourlySpentEarned(cols: number, d: { startMs: number; xapi
   const spent = Array.from({ length: N }, (_, i) => (d.xapi[i] ?? 0) + (d.inference[i] ?? 0) + (d.compute[i] ?? 0));
   const earned = Array.from({ length: N }, (_, i) => (d.earned[i] ?? 0) * (ethUsd ?? 0));
   return renderStackedBars(cols, d.startMs, [
-    { values: spent, rgb: SPENT_RGB },
-    { values: earned, rgb: EARN_RGB },
+    { values: spent, rgb: SPENT_RGB() },
+    { values: earned, rgb: EARN_RGB() },
   ]);
 }

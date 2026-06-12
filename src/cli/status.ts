@@ -27,7 +27,7 @@ import {
 } from "../compute.js";
 import {
   dim, bold, green, yellow, red, cyan, accent, border, YAPPR_LOGO,
-  fit, kv, panel, sideBySide, padRows, centerRows,
+  fit, kv, panel, sideBySide, padRows, centerRows, themeLine, toggleTheme, setTheme, detectTerminalTheme,
 } from "./ui.js";
 import { backupRemoteDb, backupLabel } from "./backup.js";
 import { hostKeyConfig } from "./host-key.js";
@@ -259,12 +259,12 @@ const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T> =>
   Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timed out")), ms))]);
 
 // Display a log line with pm2/pino-style coloring. pino-pretty (colorize:true)
-// already writes ANSI colors into the pm2 log files, so when a line is already
-// colored we keep it verbatim; otherwise we colorize a plain `[time] LEVEL: msg
-// {json}` line ourselves (dim timestamp, severity-colored level, plain message,
-// dim JSON tail).
-function displayLog(line: string): string {
-  if (line.includes("\x1b[")) return line; // already colored upstream
+// already writes ANSI colors into the pm2 log files; we strip those and recolor
+// every `[time] LEVEL: msg {json}` line ourselves (dim timestamp, severity-colored
+// level, plain message, dim JSON tail) so the feed follows the dashboard palette
+// instead of pino's 16-color codes (which terminal themes remap arbitrarily).
+function displayLog(raw: string): string {
+  const line = stripAnsi(raw);
   const m = line.match(/^(\[[^\]]*\])\s+(\w+):\s*(.*)$/s);
   if (!m) return dim(line);
   const [, ts, level, rest] = m;
@@ -480,7 +480,7 @@ function buildCronFrame(state: State, cols: number, rows: number): string[] {
   out.push(...padRows(lines, bodyRows).map((l) => fit(l, cols)));
 
   out.push(footerLine(state, [
-    key("←/→", "page"), key("shift+←/→", "status"),
+    key("←/→", "page"), key("shift+←/→", "status"), key("t", "theme"),
     key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"),
     key("q", "quit"),
   ], cols));
@@ -698,13 +698,13 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   let chartTitle: string;
   let chartLines: string[];
   if (ci === 1) {
-    chartTitle = `HOURLY SPENT vs EARNED  ${dim("· 24h ·")} ${catColor(SPENT_RGB)("spent")} ${dim("/")} ${catColor(EARN_RGB)("earned")}  ${nav}`;
+    chartTitle = `HOURLY SPENT vs EARNED  ${dim("· 24h ·")} ${catColor(SPENT_RGB())("spent")} ${dim("/")} ${catColor(EARN_RGB())("earned")}  ${nav}`;
     chartLines = hasHourly ? renderHourlySpentEarned(cols, s.chart.byType, b?.ethUsd ?? null) : placeholder;
   } else if (ci === 2) {
-    chartTitle = `HOURLY EXPENSES  ${dim("· 24h ·")} ${catColor(CAT_RGB.xapi)("x-api")} ${dim("/")} ${catColor(CAT_RGB.inference)("inference")} ${dim("/")} ${catColor(CAT_RGB.compute)("compute")}  ${nav}`;
+    chartTitle = `HOURLY EXPENSES  ${dim("· 24h ·")} ${catColor(CAT_RGB().xapi)("x-api")} ${dim("/")} ${catColor(CAT_RGB().inference)("inference")} ${dim("/")} ${catColor(CAT_RGB().compute)("compute")}  ${nav}`;
     chartLines = hasHourly ? renderHourlyBars(cols, s.chart.byType) : placeholder;
   } else {
-    chartTitle = `SPENT vs EARNED  ${dim("· 24h ·")} ${catColor(SPENT_RGB)("spent")} ${dim("/")} ${catColor(EARN_RGB)("earned")}  ${nav}`;
+    chartTitle = `SPENT vs EARNED  ${dim("· 24h ·")} ${catColor(SPENT_RGB())("spent")} ${dim("/")} ${catColor(EARN_RGB())("earned")}  ${nav}`;
     chartLines = hasData(s.chart.day) ? renderLineChart(cols, s.chart.day, b?.ethUsd ?? null, s.chart.day.startMs, s.chart.day.startMs + 24 * HOUR_MS) : placeholder;
   }
   out.push(...panel(chartTitle, chartLines, cols));
@@ -726,7 +726,7 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   // Footer: a confirmation prompt when a command is pending, otherwise key hints.
   out.push(footerLine(state, [
     key("up/dn", "scroll"), key("g/G", "top/live"), key("←/→", "chart"), key("shift+←/→", "cron"),
-    key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"),
+    key("t", "theme"), key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"),
     key("q", "quit"),
   ], cols));
 
@@ -740,13 +740,20 @@ function render(state: State) {
   const cols = Math.max(48, (process.stdout.columns ?? 80) - 1);
   const rows = Math.max(16, process.stdout.rows ?? 24);
   const out = buildFrame(state, cols, rows);
-  process.stdout.write("\x1b[H" + out.map((l) => l + "\x1b[K").join("\n") + "\x1b[0J");
+  process.stdout.write("\x1b[H" + out.map((l) => themeLine(l) + "\x1b[K").join("\n") + "\x1b[0J");
 }
 
 // ─── main dashboard loop ──────────────────────────────────────────────────────
 
 export async function runStatus(target: { ip: string; password?: string; handle?: string }): Promise<void> {
   const handle = target.handle || process.env.AGENT_HANDLE || "agent";
+
+  // Match the terminal's background unless STATUS_THEME pins one explicitly.
+  // Done before any rendering or key handling (the OSC query borrows stdin).
+  if (!process.env.STATUS_THEME) {
+    const detected = await detectTerminalTheme().catch(() => null);
+    if (detected) setTheme(detected);
+  }
   if (!target.password) {
     console.error(`  No SSH password available for root@${target.ip}. Set COMPUTE_SSH_PASSWORD in .env or use \`npm run ssh\`.`);
     return;
@@ -950,6 +957,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
         if (s === "s") { state.confirm = { prompt: "Stop yappr?", action: () => void runPm2("stop") }; render(state); return; }
         if (s === "S") { state.confirm = { prompt: "Start yappr?", action: () => void runPm2("start") }; render(state); return; }
         if (s === "d") { state.confirm = { prompt: "Re-deploy yappr? (exits dashboard)", action: redeploy }; render(state); return; }
+        if (s === "t") { toggleTheme(); render(state); return; } // dark ↔ light palette
         // shift+←/→ slides between the two pages (cyclical, so both keys work).
         if (s === "\x1b[1;2C" || s === "\x1b[1;2D") {
           state.view = (state.view + 1) % 2;
