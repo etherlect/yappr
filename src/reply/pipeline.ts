@@ -38,10 +38,10 @@ export async function processTweet(t: Tweet, log: Logger): Promise<void> {
   let context = ctx ? `${ctx}\n\n${askingTweet}` : askingTweet;
 
   try {
-    // onBeforeInference receives the raw tweet text (for inspection, logging,
-    // side-effects). The model reads the ask from the ASKER TWEET in `context`,
-    // so a hook steers inference by rewriting `context`.
-    const inferred = await runOnBeforeInference(t.text, context);
+    // onBeforeInference receives the asker tweet (for per-user logic like memory
+    // injection) and its raw text. The model reads the ask from the ASKER TWEET
+    // in `context`, so a hook steers inference by rewriting `context`.
+    const inferred = await runOnBeforeInference(t, t.text, context);
     context = inferred.context ?? context;
 
     const isAdmin = config.adminHandles.length > 0 &&

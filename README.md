@@ -240,6 +240,15 @@ export const hooks: AgentHooks = {
 
 Available hooks: `onMention`, `shouldReply`, `onBeforeInference`, `onAfterInference`, `onBeforeReply`, `onAfterReply`, `onBeforeClaim`, `onAfterClaim`, `onSwap`.
 
+The starter `config/hooks/user-memory.ts` is a working example combining three of
+them with `skillStore`: it records every mention a user sends (`onMention`) and the
+agent's posted answer (`onAfterReply`), and injects that user's last 50 exchanges
+into the prompt on their next ask (`onBeforeInference`) — so the agent remembers
+past conversations per user. Capture is free (the tweets already flow through the
+pipeline; nothing calls the paid X API), but the injected block does add prompt
+tokens on every inference call, bounded by its 50-exchange / 280-chars-per-side
+caps. Delete the file to turn memory off.
+
 ## Cron jobs (scheduled prompts)
 
 The agent can run prompts on a schedule. A cron job stores a **self-contained instruction** ("send $10 of USDC to @wander") that the engine replays through the normal agent loop — same skills, same access rules — on its schedule. Jobs are created conversationally via the starter `cron` skill:

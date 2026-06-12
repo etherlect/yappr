@@ -5,6 +5,7 @@ import type { TreasuryCycleResult } from "../treasury/cycle.js";
 export type OnMentionHook = (tweet: Tweet) => Promise<void> | void;
 export type ShouldReplyHook = (tweet: Tweet) => Promise<boolean> | boolean;
 export type OnBeforeInferenceHook = (input: {
+  tweet: Tweet;
   question: string;
   context: string | undefined;
 }) => Promise<{ question: string; context: string | undefined }> | { question: string; context: string | undefined };

@@ -19,11 +19,12 @@ export async function runShouldReply(tweet: Tweet): Promise<boolean> {
 }
 
 export async function runOnBeforeInference(
+  tweet: Tweet,
   question: string,
   context: string | undefined,
 ): Promise<{ question: string; context: string | undefined }> {
   if (!_hooks.onBeforeInference) return { question, context };
-  return _hooks.onBeforeInference({ question, context });
+  return _hooks.onBeforeInference({ tweet, question, context });
 }
 
 export async function runOnAfterInference(question: string, output: string): Promise<string> {

@@ -11,8 +11,9 @@ export const hooks: AgentHooks = {
   //   return !blocked.includes(tweet.author?.username?.toLowerCase() ?? "");
   // },
 
-  // Mutate the question or context before it reaches the LLM.
-  // onBeforeInference: async ({ question, context }) => {
+  // Mutate the question or context before it reaches the LLM. Also receives the
+  // asker tweet, for per-user logic — see user-memory.ts for a real example.
+  // onBeforeInference: async ({ tweet, question, context }) => {
   //   return { question, context };
   // },
 
