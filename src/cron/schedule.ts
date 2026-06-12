@@ -42,7 +42,7 @@ export function validateSchedule(raw: Record<string, string>): Schedule | { erro
       return { error: `interval schedules need a positive "minutes" param (got "${raw.minutes}")` };
     }
     if (minutes < config.cronMinIntervalMin) {
-      return { error: `interval too short — the minimum is every ${config.cronMinIntervalMin} minutes` };
+      return { error: `interval too short — the minimum is every ${config.cronMinIntervalMin} minute${config.cronMinIntervalMin === 1 ? "" : "s"}` };
     }
     return { type: "interval", minutes: Math.round(minutes) };
   }

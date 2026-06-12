@@ -54,6 +54,7 @@ export const config = {
   // to non-admins (one user must not be able to exhaust the pool).
   cronMaxJobsPerUser: numeric("CRON_MAX_JOBS_PER_USER", "3"),
   // Floor for interval schedules: every run spends money, so no sub-5-min loops.
+  // One-shots ("in N minutes") are exempt — the floor only guards recurrence.
   cronMinIntervalMin: numeric("CRON_MIN_INTERVAL_MIN", "5"),
   // Per-run cap — skills like `wallet` poll Bankr agent jobs for minutes, but a
   // hung run must not stall the (sequential) scheduler forever.

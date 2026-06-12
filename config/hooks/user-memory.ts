@@ -48,7 +48,7 @@ function toExchange(t: Tweet): Exchange {
 function render(e: Exchange): string {
   const where = [
     `tweet ${e.id}`,
-    e.conversationId && e.conversationId !== e.id ? `conv ${e.conversationId}` : null,
+    e.conversationId ? `conv ${e.conversationId}` : null,
     e.replyToId || e.replyToUser
       ? `replying to ${[e.replyToUser && `@${e.replyToUser}`, e.replyToId && `in ${e.replyToId}`].filter(Boolean).join(" ")}`
       : null,
