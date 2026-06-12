@@ -11,6 +11,8 @@ Extract these params from the request:
 
 Ownership: users can only see and manage (remove/pause/resume) their OWN jobs; admins can manage all jobs. This is enforced by the skill itself from the asking tweet's author — you don't need to check it.
 
+A job whose instruction needs skills the creator has no access to is refused at creation ("cannot create this job — it would fail on every run: …") — relay that message; don't retry with a reworded prompt.
+
 For "add", also extract:
 - prompt (required): the instruction to execute on schedule. It MUST be SELF-CONTAINED — at execution time there is no conversation, so resolve every reference now: "me" → the asker's @handle, "this token" → the actual token, relative amounts → concrete values. Example: user says "send me 10$ every 1h" → prompt: "send $10 of USDC to @theirhandle".
 - schedule (required): one of "interval", "once", "daily"

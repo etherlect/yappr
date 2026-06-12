@@ -85,6 +85,24 @@ function rowToJob(r: Row): CronJob {
 // returns them verbatim), so they read as something the model can relay to the
 // user. The creator is snapshotted from the CREATING tweet's author — params are
 // model-controlled, the tweet author is not.
+// Caps on ACTIVE (enabled = 1) jobs — every run costs money, so disabled jobs
+// don't count. Checked at creation AND on resume (resumeCronJob): if resume
+// skipped it, pause-create-resume cycles would bypass the limits. The per-user
+// cap on top of the global one matters once the skill is opened to non-admins —
+// a single user must not be able to exhaust the pool.
+function checkCaps(d: NonNullable<ReturnType<typeof conn>>, creatorId: string): { error: string } | { ok: true } {
+  const active = d.prepare("SELECT COUNT(*) AS n FROM cron_jobs WHERE enabled = 1").get() as { n: number };
+  if (active.n >= config.cronMaxJobs) {
+    return { error: `cron job limit reached (${config.cronMaxJobs} active jobs) — remove one first` };
+  }
+  const own = d.prepare("SELECT COUNT(*) AS n FROM cron_jobs WHERE enabled = 1 AND creator_id = ?")
+    .get(creatorId) as { n: number };
+  if (own.n >= config.cronMaxJobsPerUser) {
+    return { error: `you already have ${own.n} active cron jobs (limit ${config.cronMaxJobsPerUser}) — remove one first` };
+  }
+  return { ok: true };
+}
+
 export function addCronJob(input: {
   prompt: string;
   schedule: Schedule;
@@ -101,17 +119,8 @@ export function addCronJob(input: {
     return { error: "could not identify the requesting user from the tweet" };
   }
 
-  const active = d.prepare("SELECT COUNT(*) AS n FROM cron_jobs WHERE enabled = 1").get() as { n: number };
-  if (active.n >= config.cronMaxJobs) {
-    return { error: `cron job limit reached (${config.cronMaxJobs} active jobs) — remove one first` };
-  }
-  // Per-user cap on top of the global one, so when the skill is opened to
-  // non-admins a single user can't exhaust the pool (every run costs money).
-  const own = d.prepare("SELECT COUNT(*) AS n FROM cron_jobs WHERE enabled = 1 AND creator_id = ?")
-    .get(author.id) as { n: number };
-  if (own.n >= config.cronMaxJobsPerUser) {
-    return { error: `you already have ${own.n} active cron jobs (limit ${config.cronMaxJobsPerUser}) — remove one first` };
-  }
+  const caps = checkCaps(d, author.id);
+  if ("error" in caps) return caps;
 
   const now = Date.now();
   // Relative schedules ("in/every N minutes") anchor at the asking tweet's
@@ -169,20 +178,31 @@ export function listCronJobs(opts: { includeDisabled?: boolean; creatorId?: stri
   return (d.prepare(sql).all(...args) as Row[]).map(rowToJob);
 }
 
+// Disable only — resuming goes through resumeCronJob (cap re-check + re-arm).
 export function setCronJobEnabled(id: number, enabled: boolean): boolean {
   const d = conn();
   if (!d) return false;
-  // Re-arming a paused job recomputes next_run_at from now — otherwise a job
-  // paused past its slot would fire immediately on resume.
-  if (enabled) {
-    const job = getCronJob(id);
-    if (!job) return false;
-    const next = nextRunAt(job.schedule, Date.now());
-    if (next === null) return false; // spent one-shot can't be resumed
-    return d.prepare("UPDATE cron_jobs SET enabled = 1, next_run_at = ?, consecutive_failures = 0 WHERE id = ?")
-      .run(next, id).changes > 0;
-  }
+  if (enabled) return "job" in resumeCronJob(id);
   return d.prepare("UPDATE cron_jobs SET enabled = 0 WHERE id = ?").run(id).changes > 0;
+}
+
+// Re-arm a paused job. Subject to the same active-job caps as creation —
+// otherwise pause-create-resume cycles would bypass the limits — and
+// next_run_at is recomputed from now, otherwise a job paused past its slot
+// would fire immediately on resume.
+export function resumeCronJob(id: number): { job: CronJob } | { error: string } {
+  const d = conn();
+  if (!d) return { error: "cron storage unavailable" };
+  const job = getCronJob(id);
+  if (!job) return { error: `no cron job #${id}` };
+  if (job.enabled) return { job }; // already running — nothing to do
+  const caps = checkCaps(d, job.creatorId);
+  if ("error" in caps) return caps;
+  const next = nextRunAt(job.schedule, Date.now());
+  if (next === null) return { error: `cron #${id} can't be resumed — its one-shot time is already spent` };
+  d.prepare("UPDATE cron_jobs SET enabled = 1, next_run_at = ?, consecutive_failures = 0 WHERE id = ?")
+    .run(next, id);
+  return { job: getCronJob(id)! };
 }
 
 export function removeCronJob(id: number): boolean {

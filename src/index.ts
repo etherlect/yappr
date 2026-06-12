@@ -34,8 +34,9 @@ export { withSchema } from "./db.js";
 
 // ── Cron jobs (scheduled prompts) — store/validation only; the runner loop is
 // engine-internal (started by yappr.ts), skills only manage the table ──
-export { addCronJob, listCronJobs, getCronJob, setCronJobEnabled, removeCronJob, describeSchedule } from "./cron/store.js";
+export { addCronJob, listCronJobs, getCronJob, setCronJobEnabled, resumeCronJob, removeCronJob, describeSchedule } from "./cron/store.js";
 export { validateSchedule } from "./cron/schedule.js";
+export { checkCronCapability } from "./cron/capability.js";
 
 // ── Full X/Twitter SDK (extractTweetId, getTweetById, postTweet, …) ──
 export * from "./x/client.js";

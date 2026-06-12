@@ -47,7 +47,9 @@ export async function processTweet(t: Tweet, log: Logger): Promise<void> {
     const isAdmin = config.adminHandles.length > 0 &&
       config.adminHandles.includes(t.author?.username?.toLowerCase() ?? "");
 
-    let replyText = await runAgentLoop(context, isAdmin, t, log);
+    // deniedSkills is ignored for live mentions: the model's reply already
+    // tells the asker about the denial; it only drives cron failure handling.
+    let replyText = (await runAgentLoop(context, isAdmin, t, log)).text;
 
     replyText = await runOnAfterInference(t.text, replyText);
 

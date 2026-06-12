@@ -266,9 +266,11 @@ The agent can run prompts on a schedule. A cron job stores a **self-contained in
 - Runs are **silent**: the agent's final reply is stored on the job (shown by `list`), never posted to X. If a job should post, its prompt must say so explicitly and use a posting skill.
 - Privileges are re-derived from `ADMIN_HANDLES` at **every run** — a demoted creator's jobs drop to public skills on the next tick; admin-only skills stay enforced in code.
 - At-most-once per slot: the job's clock advances *before* execution, so a crash can't double-fire a money-moving job. Recurring slots missed while the agent was down are skipped; overdue one-shots run late.
-- A recurring job that fails `CRON_MAX_CONSECUTIVE_FAILURES` times in a row is auto-paused so a broken prompt can't burn credits forever (`resume` re-arms it).
+- A recurring job that fails `CRON_MAX_CONSECUTIVE_FAILURES` times in a row is auto-paused so a broken prompt can't burn credits forever (`resume` re-arms it). Runs whose skill calls hit an access denial (non-admin creator, or an admin later removed from `ADMIN_HANDLES`) count as failures too — a job that can never do its work pauses instead of "succeeding" uselessly forever.
 
-The starter skill ships `access: admin`. To let anyone schedule jobs, flip it to `access: all` in `config/skills/cron/skill.md` — ownership checks and the per-user cap (`CRON_MAX_JOBS_PER_USER`) are already enforced in code. Remember every run costs inference (and whatever paid skills the prompt uses), so revisit the caps before opening it up.
+The starter skill ships `access: admin`. To let anyone schedule jobs, flip it to `access: all` in `config/skills/cron/skill.md` — ownership checks and the per-user cap (`CRON_MAX_JOBS_PER_USER`) are already enforced in code. The caps count **active** jobs only and are checked at creation *and* on resume, so pausing jobs can't be used to stack up extras. Remember every run costs inference (and whatever paid skills the prompt uses), so revisit the caps before opening it up.
+
+Two layers keep a non-admin from parking jobs that need admin skills ("post X every 5 min"): at creation, `checkCronCapability` (one small LLM call, skipped for admins) refuses instructions that clearly need a skill the creator can't use, with a reason the agent relays; and at run time, the access-denied-counts-as-failure rule above bounds whatever slips through. The creation check is a helpfulness/economics guard — actual skill access is always enforced in code.
 
 ## Economics
 

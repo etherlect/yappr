@@ -9,3 +9,7 @@ export function initSkills(skills: SkillDef[]): void {
 export function getSkill(name: string): SkillDef | undefined {
   return _skills.find((s) => s.name === name);
 }
+
+export function listSkills(): SkillDef[] {
+  return _skills;
+}

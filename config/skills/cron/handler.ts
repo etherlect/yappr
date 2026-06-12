@@ -1,6 +1,6 @@
 import {
-  addCronJob, listCronJobs, getCronJob, setCronJobEnabled, removeCronJob,
-  validateSchedule, describeSchedule, config,
+  addCronJob, listCronJobs, getCronJob, setCronJobEnabled, resumeCronJob, removeCronJob,
+  validateSchedule, describeSchedule, checkCronCapability, config,
   type SkillHandler, type CronJob, type Tweet,
 } from "yappr";
 
@@ -39,6 +39,11 @@ export const handler: SkillHandler = async (params, tweet) => {
     case "add": {
       const schedule = validateSchedule(params);
       if ("error" in schedule) return { text: schedule.error };
+      // Refuse jobs whose instruction needs skills the creator can't use — they
+      // would burn inference on every run only to hit the access denial. No-op
+      // for admins; see src/cron/capability.ts for the why and the limits.
+      const cap = await checkCronCapability(params.prompt ?? "", isAdmin(tweet));
+      if (!cap.ok) return { text: `cannot create this job — it would fail on every run: ${cap.reason}` };
       const res = addCronJob({ prompt: params.prompt ?? "", schedule, tweet });
       if ("error" in res) return { text: res.error };
       const j = res.job;
@@ -67,15 +72,15 @@ export const handler: SkillHandler = async (params, tweet) => {
         removeCronJob(id);
         return { text: `cron #${id} removed (was: ${describeSchedule(job.schedule)} — "${job.prompt}")` };
       }
-      const enable = params.action === "resume";
-      const ok = setCronJobEnabled(id, enable);
-      if (!ok) return { text: enable ? `cron #${id} can't be resumed (one-shot already spent?)` : `cron #${id} pause failed` };
-      const updated = getCronJob(id);
-      return {
-        text: enable
-          ? `cron #${id} resumed (next run ${updated ? iso(updated.nextRunAt) : "?"})`
-          : `cron #${id} paused`,
-      };
+      if (params.action === "resume") {
+        // resumeCronJob re-checks the active-job caps (a paused job freed its
+        // slot) and re-arms next_run_at; its errors are written for the model.
+        const res = resumeCronJob(id);
+        if ("error" in res) return { text: res.error };
+        return { text: `cron #${id} resumed (next run ${iso(res.job.nextRunAt)})` };
+      }
+      const ok = setCronJobEnabled(id, false);
+      return { text: ok ? `cron #${id} paused` : `cron #${id} pause failed` };
     }
 
     default:

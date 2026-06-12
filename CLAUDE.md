@@ -95,7 +95,7 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
 | `llm/` | LLM gateway client + prompt assembly from `config/context/`. Costs each completion from its token usage × per-model `/v1/models` pricing → records inference spend. The system-prompt date is hour-granular so the prompt stays prompt-cacheable across calls |
 | `reply/` | The reply loop: poller, pipeline, gating, agent reasoning loop |
 | `treasury/` | The treasury loop, on-chain calls, and ABIs |
-| `cron/` | The cron loop: `schedule.ts` (schedule grammar + IANA/DST next-run math), `store.ts` (`cron_jobs` table + CRUD), `runner.ts` (tick loop → `runAgentLoop`) |
+| `cron/` | The cron loop: `schedule.ts` (schedule grammar + IANA/DST next-run math), `store.ts` (`cron_jobs` table + CRUD), `runner.ts` (tick loop → `runAgentLoop`; access-denied runs count as failures → auto-pause), `capability.ts` (creation-time LLM check: refuse jobs needing skills the creator can't use — economics guard, not the security boundary) |
 | `skills/` | Loader/registry/types for `config/skills/` |
 | `hooks/` | Loader/registry/types for `config/hooks/` |
 | `x/` | Full X/Twitter SDK over the x402 data endpoint (`client.ts`) + types |

@@ -96,20 +96,34 @@ async function runJob(job: CronJob, log: Logger): Promise<void> {
   const context = `${header}\n\n${contextBlock(BLOCK.asker, JSON.stringify(tweet, null, 2))}`;
 
   const startedAt = Date.now();
-  try {
-    const result = await withTimeout(runAgentLoop(context, isAdmin, tweet, log), config.cronRunTimeoutMs);
-    markCronRun(job.id, { result });
-    log.info({ id: job.id, ms: Date.now() - startedAt, result: result.slice(0, 200) }, `cron job #${job.id} ok`);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+
+  // Shared failure path for thrown errors AND access-denied runs. A persistently
+  // failing job must not burn inference/skill spend forever — auto-pause after N
+  // consecutive failures; `resume` re-arms it.
+  const fail = (message: string) => {
     markCronRun(job.id, { error: message });
     const failures = job.consecutiveFailures + 1;
     log.error({ id: job.id, failures, max: config.cronMaxConsecutiveFailures, err: message }, `cron job #${job.id} failed`);
-    // A persistently failing job must not burn inference/skill spend forever —
-    // auto-pause after N consecutive failures; `resume` re-arms it.
     if (failures >= config.cronMaxConsecutiveFailures && job.schedule.type !== "once") {
       setCronJobEnabled(job.id, false);
       log.error({ id: job.id }, `cron job #${job.id} auto-paused after ${failures} consecutive failures`);
     }
+  };
+
+  try {
+    const { text: result, deniedSkills } = await withTimeout(runAgentLoop(context, isAdmin, tweet, log), config.cronRunTimeoutMs);
+    if (deniedSkills.length > 0) {
+      // The run hit the agent loop's code-level access check — the creator's
+      // privileges don't cover this job (non-admin creator, or an admin who was
+      // removed from ADMIN_HANDLES). That won't fix itself between runs, so it
+      // counts as a failure: the auto-pause cap stops the burn instead of the
+      // job "succeeding" uselessly forever.
+      fail(`needs skill(s) the creator has no access to: ${[...new Set(deniedSkills)].join(", ")}`);
+      return;
+    }
+    markCronRun(job.id, { result });
+    log.info({ id: job.id, ms: Date.now() - startedAt, result: result.slice(0, 200) }, `cron job #${job.id} ok`);
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err));
   }
 }

@@ -82,16 +82,23 @@ export function parseStep(raw: string): AgentStep | null {
   }
 }
 
+// `deniedSkills` lists skills the model tried to call but was refused in code
+// (admin skill, non-admin caller). Live replies ignore it (the reply text already
+// tells the asker); the cron runner uses it to mark the run failed, so a job that
+// can never do its work auto-pauses instead of burning inference forever.
+export type AgentLoopResult = { text: string; deniedSkills: string[] };
+
 export async function runAgentLoop(
   context: string,
   isAdmin: boolean,
   tweet: Tweet,
   log: Logger,
-): Promise<string> {
+): Promise<AgentLoopResult> {
   const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
     { role: "system", content: agentSystem(isAdmin) },
     { role: "user", content: context },
   ];
+  const deniedSkills: string[] = [];
 
   for (let step = 0; step < config.agentMaxSteps; step++) {
     const raw = await chat(messages, { jsonMode: true });
@@ -110,10 +117,11 @@ export async function runAgentLoop(
 
     if (parsed.action === "reply") {
       log.info({ id: tweet.id, steps: step + 1 }, "agent produced reply");
-      return parsed.text;
+      return { text: parsed.text, deniedSkills };
     }
 
-    const observation = await runSkillStep(parsed.skill, parsed.params, tweet, isAdmin, log);
+    const { observation, denied } = await runSkillStep(parsed.skill, parsed.params, tweet, isAdmin, log);
+    if (denied) deniedSkills.push(parsed.skill);
     log.info({ id: tweet.id, step, skill: parsed.skill }, `Observation from "${parsed.skill}"`);
     // The chat API has no "skill"/"tool" role we can use without native tool-calls,
     // so this rides on a "user" message — but we fence it as retrieved skill output
@@ -133,11 +141,11 @@ export async function runAgentLoop(
   try {
     const raw = await chat(messages, { jsonMode: true });
     const parsed = parseStep(raw);
-    if (parsed?.action === "reply") return parsed.text;
+    if (parsed?.action === "reply") return { text: parsed.text, deniedSkills };
   } catch {
     // fall through to fallback
   }
-  return FALLBACK_REPLY;
+  return { text: FALLBACK_REPLY, deniedSkills };
 }
 
 async function runSkillStep(
@@ -146,20 +154,20 @@ async function runSkillStep(
   tweet: Tweet,
   isAdmin: boolean,
   log: Logger,
-): Promise<string> {
+): Promise<{ observation: string; denied?: boolean }> {
   const skill = getSkill(skillName);
 
   if (!skill) {
-    return `Unknown skill "${skillName}".`;
+    return { observation: `Unknown skill "${skillName}".` };
   }
 
   if (skill.access === "admin" && !isAdmin) {
     log.warn({ id: tweet.id, skill: skillName, author: tweet.author?.username }, "admin skill denied: not admin");
-    return `Access denied: "${skillName}" requires admin privileges.`;
+    return { observation: `Access denied: "${skillName}" requires admin privileges.`, denied: true };
   }
 
   if (!skill.handler) {
-    return `"${skillName}" is a guidance-only skill and has no data to return.`;
+    return { observation: `"${skillName}" is a guidance-only skill and has no data to return.` };
   }
 
   try {
@@ -167,9 +175,9 @@ async function runSkillStep(
     if (result.mediaUrl) {
       log.warn({ id: tweet.id }, "skill returned mediaUrl but media posting is not yet supported");
     }
-    return result.text ?? (result.data !== undefined ? JSON.stringify(result.data) : "");
+    return { observation: result.text ?? (result.data !== undefined ? JSON.stringify(result.data) : "") };
   } catch (err) {
     log.error({ err, id: tweet.id, skill: skillName }, "skill handler threw");
-    return `Error running "${skillName}": ${err instanceof Error ? err.message : String(err)}`;
+    return { observation: `Error running "${skillName}": ${err instanceof Error ? err.message : String(err)}` };
   }
 }
