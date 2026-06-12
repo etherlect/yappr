@@ -47,7 +47,7 @@ export const config = {
 
   // ── Cron jobs (scheduled prompts, see src/cron/) ──
   // How often the scheduler checks for due jobs. Cheap (one local SQLite read).
-  cronTickMs: numeric("CRON_TICK_MS", "30000"),
+  cronTickMs: numeric("CRON_TICK_MS", "10000"),
   // Cap on ACTIVE jobs — each run costs inference + whatever paid skills it calls.
   cronMaxJobs: numeric("CRON_MAX_JOBS", "20"),
   // Per-creator cap under the global one — matters once the cron skill is opened

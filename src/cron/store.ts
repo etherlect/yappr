@@ -114,7 +114,17 @@ export function addCronJob(input: {
   }
 
   const now = Date.now();
-  const next = nextRunAt(input.schedule, now);
+  // Relative schedules ("in/every N minutes") anchor at the asking tweet's
+  // created_at, not at job creation: poll lag + the creating agent loop add
+  // ~15-40s before this row exists, and the user counts from when they tweeted.
+  // Falls back to `now` when created_at is missing/unparseable (or ahead of our
+  // clock). If processing was so slow that anchor+delay is already past, the
+  // job simply fires on the next tick, like any overdue job.
+  const isRelative = input.schedule.type === "interval" ||
+    (input.schedule.type === "once" && input.schedule.minutes !== undefined);
+  const tweetAt = Date.parse(input.tweet.created_at ?? "");
+  const anchor = isRelative && Number.isFinite(tweetAt) && tweetAt <= now ? tweetAt : now;
+  const next = nextRunAt(input.schedule, anchor);
   // null = an absolute one-shot already in the past — refuse rather than store a
   // job that would either never fire or fire "late" immediately.
   if (next === null) return { error: "that time is already in the past — pick a future time" };

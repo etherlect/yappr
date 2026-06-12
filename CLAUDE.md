@@ -47,7 +47,7 @@ Everything runs from one process (`src/yappr.ts`), which starts three timers:
    claim only if there are any → optional dev cut → burn → keep a small ETH gas
    reserve → swap WETH→USDC → extend compute. This is what makes the agent
    self-funding. `treasury/index.ts` holds the on-chain calls.
-3. **Cron loop** — `cron/runner.ts` ticks every 30s over the `cron_jobs` table and
+3. **Cron loop** — `cron/runner.ts` ticks every 10s over the `cron_jobs` table and
    replays each due job's stored prompt through the same agent loop, sequentially
    (privileges re-derived from `ADMIN_HANDLES` per run; results stored in the row,
    never posted). Jobs are created/managed by a `config/skills/cron/` skill via the

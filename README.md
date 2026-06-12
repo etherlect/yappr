@@ -87,7 +87,7 @@ All have sensible defaults; set them in `.env` to override:
 | `TREASURY_DRY_RUN` | `false` | Log treasury/wallet writes without submitting anything |
 | `LLM_TIMEOUT_MS` | `120000` | Per-request timeout on LLM completions |
 | `DB_PATH` | `./yappr.db` | SQLite database location (the deploy sets `/var/lib/yappr/yappr.db` on the server) |
-| `CRON_TICK_MS` | `30000` | How often the cron scheduler checks for due jobs |
+| `CRON_TICK_MS` | `10000` | How often the cron scheduler checks for due jobs |
 | `CRON_MAX_JOBS` | `20` | Max active cron jobs in total |
 | `CRON_MAX_JOBS_PER_USER` | `3` | Max active cron jobs per creator |
 | `CRON_MIN_INTERVAL_MIN` | `5` | Shortest allowed "every N minutes" interval |

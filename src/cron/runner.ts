@@ -81,7 +81,10 @@ async function runJob(job: CronJob, log: Logger): Promise<void> {
   // TWEET is the request" contract holds unchanged), and a CRON JOB header tells
   // the model this is a scheduled replay, not a live mention. The source tweet
   // keeps the creator's identity attached for skills that read tweet.author.
-  const tweet: Tweet = { ...(job.sourceTweet ?? ({} as Tweet)), text: job.prompt };
+  // created_at is stamped with the run time: addCronJob anchors relative
+  // schedules on it, so a job created BY this run ("in 5 min") must count from
+  // now, not from the original tweet's (possibly days-old) timestamp.
+  const tweet: Tweet = { ...(job.sourceTweet ?? ({} as Tweet)), text: job.prompt, created_at: new Date().toISOString() };
   // The creating tweet id is surfaced so a prompt can reference its origin
   // (e.g. "reply to the tweet that created this job").
   const origin = job.sourceTweet?.id ? ` in tweet ${job.sourceTweet.id}` : "";
