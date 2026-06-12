@@ -1,4 +1,5 @@
 import { withSchema } from "./db.js";
+import { log } from "./log.js";
 
 // Namespaced key/value storage for skills and hooks, in the shared SQLite DB
 // (see db.ts). This is the convenience layer of the public storage API: a skill
@@ -16,7 +17,9 @@ import { withSchema } from "./db.js";
 //
 // Like everything on db.ts, operations are best-effort: if the DB can't be
 // opened, reads return empty and writes no-op, degrading the skill instead of
-// crashing the agent.
+// crashing the agent. Unlike the engine's own ledgers, failures here are
+// logged (warn): skill params come from LLM JSON, so a non-string value
+// sneaking past the types is a realistic bug the author needs to see.
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS skill_kv (
   ns TEXT NOT NULL,
@@ -36,19 +39,24 @@ export type SkillStoreEntry = { key: string; value: string; updatedAt: number };
 export type SkillStore = {
   get(key: string): string | null;
   set(key: string, value: string): void;
+  /** JSON.parse'd get(); null if missing or not valid JSON (logged). */
+  getJSON<T = unknown>(key: string): T | null;
+  /** set() with JSON.stringify — for structured values. */
+  setJSON(key: string, value: unknown): void;
   delete(key: string): boolean;
   list(prefix?: string): SkillStoreEntry[];
 };
 
 export function skillStore(ns: string): SkillStore {
-  return {
+  const store: SkillStore = {
     get(key) {
       const d = conn();
       if (!d) return null;
       try {
         const row = d.prepare("SELECT value FROM skill_kv WHERE ns = ? AND key = ?").get(ns, key) as { value: string } | undefined;
         return row?.value ?? null;
-      } catch {
+      } catch (err) {
+        log.warn({ ns, key, err }, "skillStore.get failed");
         return null;
       }
     },
@@ -61,7 +69,27 @@ export function skillStore(ns: string): SkillStore {
           "INSERT INTO skill_kv(ns, key, value, updated_at) VALUES(?, ?, ?, ?) " +
           "ON CONFLICT(ns, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
         ).run(ns, key, value, Date.now());
-      } catch { /* best-effort */ }
+      } catch (err) {
+        // Most likely a non-string value from untyped LLM params — surface it,
+        // a skill that thinks it stored something must not fail silently.
+        log.warn({ ns, key, err }, "skillStore.set failed (value not stored)");
+      }
+    },
+
+    getJSON(key) {
+      const raw = store.get(key);
+      if (raw === null) return null;
+      try {
+        return JSON.parse(raw);
+      } catch (err) {
+        log.warn({ ns, key, err }, "skillStore.getJSON: stored value is not valid JSON");
+        return null;
+      }
+    },
+
+    setJSON(key, value) {
+      // stringify(undefined) is undefined, which would fail to bind — store null.
+      store.set(key, JSON.stringify(value) ?? "null");
     },
 
     delete(key) {
@@ -69,7 +97,8 @@ export function skillStore(ns: string): SkillStore {
       if (!d) return false;
       try {
         return d.prepare("DELETE FROM skill_kv WHERE ns = ? AND key = ?").run(ns, key).changes > 0;
-      } catch {
+      } catch (err) {
+        log.warn({ ns, key, err }, "skillStore.delete failed");
         return false;
       }
     },
@@ -83,9 +112,11 @@ export function skillStore(ns: string): SkillStore {
           : d.prepare("SELECT key, value, updated_at FROM skill_kv WHERE ns = ? ORDER BY key").all(ns);
         return (rows as { key: string; value: string; updated_at: number }[])
           .map((r) => ({ key: r.key, value: r.value, updatedAt: r.updated_at }));
-      } catch {
+      } catch (err) {
+        log.warn({ ns, prefix, err }, "skillStore.list failed");
         return [];
       }
     },
   };
+  return store;
 }

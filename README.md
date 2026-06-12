@@ -192,11 +192,16 @@ export const handler: SkillHandler = async (params, tweet) => {
 };
 ```
 
+Values are strings; for structured data use `setJSON(key, value)` /
+`getJSON<T>(key)`, which handle the (de)serialisation and return `null` for
+missing or corrupt entries instead of throwing.
+
 All namespaces share one `skill_kv` table keyed on `(namespace, key)`; a store only
 ever sees its own namespace, so name it after your skill unless two extensions are
 deliberately sharing data. Everything is best-effort like the rest of the engine:
 if the DB can't be opened, reads return empty and writes no-op rather than crashing
-the agent.
+the agent — but failed operations are logged (`warn`), so a value that didn't store
+(e.g. a non-string sneaking in from LLM-provided params) shows up in the logs.
 
 Need real columns instead of KV? `withSchema(ddl)` returns the shared
 `better-sqlite3` connection with your DDL applied (once per process) — the same
@@ -211,6 +216,10 @@ const db = (): Database | null => withSchema(
   "CREATE TABLE IF NOT EXISTS skill_remember_notes (user_id TEXT, note TEXT, created_at INTEGER)"
 );
 ```
+
+Note there are no migrations: the DDL is `IF NOT EXISTS`, so editing it later
+(e.g. adding a column) does nothing on databases where the table already exists —
+run your own `ALTER TABLE` for that.
 
 Inspecting data is plain SQLite — locally or against a backup:
 `sqlite3 yappr.db "SELECT * FROM skill_kv WHERE ns='remember'"`.
