@@ -160,7 +160,7 @@ export const YAPPR_ART = [
 // Brand logo (quadrant art, 17x9 cells) from yappr-8.png — flat #0ff991 green face with
 // solid black eyes + mouth (cleaned at 2x then downsampled so the mouth is a solid
 // blob, no tongue). Transparent bg renders as spaces.
-export const YAPPR_LOGO = [
+const RAW_LOGO = [
   "             \u001b[38;2;0;82;255m▟\u001b[0m\u001b[38;2;0;82;255m▘\u001b[0m\u001b[38;2;0;82;255m▗\u001b[0m\u001b[38;2;0;82;255m▄\u001b[0m",
   "   \u001b[38;2;0;82;255m▄\u001b[0m\u001b[38;2;0;82;255m▟\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m▄\u001b[0m\u001b[38;2;0;82;255m▖\u001b[0m\u001b[38;2;0;82;255m▝\u001b[0m\u001b[38;2;0;82;255m▜\u001b[0m\u001b[38;2;0;82;255m▖\u001b[0m",
   " \u001b[38;2;0;82;255m▄\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;0;0;48;2;0;82;255m▗\u001b[0m\u001b[38;2;0;0;0;48;2;0;82;255m▖\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;0;0;48;2;0;82;255m▀\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m▙\u001b[0m  ",
@@ -171,3 +171,12 @@ export const YAPPR_LOGO = [
   "  \u001b[38;2;0;82;255m▝\u001b[0m\u001b[38;2;0;82;255m▜\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m▛\u001b[0m\u001b[38;2;0;82;255m▘\u001b[0m   ",
   "     \u001b[38;2;0;82;255m▐\u001b[0m\u001b[38;2;0;82;255m█\u001b[0m\u001b[38;2;0;82;255m▀\u001b[0m\u001b[38;2;0;82;255m▀\u001b[0m\u001b[38;2;0;82;255m▀\u001b[0m       ",
 ];
+
+// Full-block cells (fg-only `█`) only paint the font's em-box, so terminals with
+// extra line spacing show the terminal background between rows — invisible on a
+// dark background, white stripes on a light one. Cell BACKGROUNDS do fill the
+// whole line height, so solid cells render as a bg-painted space instead. Edge
+// quadrant glyphs keep their fg form (their empty half must stay transparent).
+export const YAPPR_LOGO = RAW_LOGO.map((l) =>
+  l.replaceAll(/\x1b\[38;2;(\d+;\d+;\d+)m█\x1b\[0m/g, "\x1b[48;2;$1m \x1b[0m"),
+);
