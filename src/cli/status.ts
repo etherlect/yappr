@@ -66,6 +66,8 @@ const LLM_KEY = process.env.BANKR_LLM_KEY || process.env.BANKR_API_KEY;
 // /var/lib/yappr/yappr.db), opening the same DB the agent writes to. The engine is
 // installed under node_modules/yappr, so the compiled CLI lives there.
 const STATS_QUERY_CMD = process.env.STATUS_STATS_CMD || "cd /yappr && node node_modules/yappr/dist/src/stats-cli.js summary";
+// Same CLI, `cron` subcommand — the cron_jobs rows as JSON for the CRON JOBS page.
+const CRON_QUERY_CMD = process.env.STATUS_CRON_CMD || "cd /yappr && node node_modules/yappr/dist/src/stats-cli.js cron";
 
 // ─── on-chain balances (Base) ──────────────────────────────────────────────────
 
@@ -192,10 +194,43 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
   }
 }
 
+// Cron jobs for the CRON JOBS page, read via `stats-cli cron` (same DB, same
+// pattern as fetchAgentStats). Returns null when the query fails or the deployed
+// engine predates the subcommand — the page shows a placeholder in that case.
+async function fetchCronJobs(ssh: NodeSSH): Promise<CronJobInfo[] | null> {
+  const res = await ssh.execCommand(CRON_QUERY_CMD, { cwd: "/" }).catch(() => null);
+  if (!res?.stdout) return null;
+  try {
+    const arr = JSON.parse(res.stdout) as any[];
+    if (!Array.isArray(arr)) return null;
+    return arr.map((j) => ({
+      id: Number(j.id) || 0,
+      prompt: String(j.prompt ?? ""),
+      schedule: String(j.schedule ?? ""),
+      creator: String(j.creator ?? ""),
+      enabled: !!j.enabled,
+      nextRunAt: Number(j.nextRunAt) || 0,
+      lastRunAt: j.lastRunAt != null ? Number(j.lastRunAt) : null,
+      lastResult: j.lastResult != null ? String(j.lastResult) : null,
+      lastError: j.lastError != null ? String(j.lastError) : null,
+      runs: Number(j.runs) || 0,
+      consecutiveFailures: Number(j.consecutiveFailures) || 0,
+    }));
+  } catch {
+    return null;
+  }
+}
+
 // ─── parsing ──────────────────────────────────────────────────────────────────
 
 type Stats = { mentions: number; replies: number; llmTurns: number; spentUsd: number; warns: number; errors: number; earnedWeth: number; devWeth: number; spentUsdWindow: number; inferenceUsdWindow: number; earnedWethWindow: number; rateWindowHours: number; spentByType: { "x-api": number; inference: number; compute: number }; chart: { day: ChartSeries; byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; earned: number[] } } };
 type Pm2 = { status: string; bootMs: number; restarts: number; mem: number; cpu: number };
+// One cron_jobs row as shipped by `stats-cli cron` (schedule pre-rendered to prose).
+type CronJobInfo = {
+  id: number; prompt: string; schedule: string; creator: string; enabled: boolean;
+  nextRunAt: number; lastRunAt: number | null; lastResult: string | null;
+  lastError: string | null; runs: number; consecutiveFailures: number;
+};
 type Specs = { cpu: string; ram: string; disk: string; os: string };
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -342,9 +377,93 @@ type State = {
   // Which chart panel is shown (←/→): 0 = spent/earned 24h, 1 = hourly spent vs
   // earned, 2 = hourly expenses by category.
   chartIndex: number;
+  // Which page is shown (shift+←/→ cycles): 0 = status, 1 = cron jobs.
+  view: number;
+  // Cron jobs for the CRON JOBS page (null until the first successful fetch).
+  cron: CronJobInfo[] | null;
+  // Zero-based page within the cron list (←/→ while on the cron view).
+  cronPage: number;
 };
 
+// Footer line: a pending y/n confirmation when armed, otherwise the key hints.
+function footerLine(state: State, hints: string[], cols: number): string {
+  const footer = state.confirm
+    ? `${yellow(state.confirm.prompt)}  ${accent("y")}${dim("/")}${accent("Enter")} ${dim("to confirm, any other key cancels")}`
+    : hints.join(dim("  ")) + `   ${dim("· safe to quit — reopen with")} ${accent("npx yappr status")}`;
+  return fit(footer, cols);
+}
+
+const key = (k: string, label: string) => `${accent(k)} ${dim(label)}`;
+
+// ─── cron jobs page ────────────────────────────────────────────────────────────
+
+// Each job renders as its own panel: 3 content lines + 2 border lines, so
+// pagination is simple: as many whole boxes as fit the terminal, ←/→ to page.
+const CRON_LINES_PER_JOB = 5;
+
+function buildCronFrame(state: State, cols: number, rows: number): string[] {
+  const out: string[] = [""];
+  const now = Date.now();
+  const jobs = state.cron;
+  const PAD = 8; // label column of the box body lines
+
+  // Box rows available: total − top margin (1) − header (1) − footer (1).
+  const bodyRows = Math.max(CRON_LINES_PER_JOB, rows - 3);
+  const pageSize = Math.max(1, Math.floor(bodyRows / CRON_LINES_PER_JOB));
+  const pages = Math.max(1, Math.ceil((jobs?.length ?? 0) / pageSize));
+  state.cronPage = Math.min(Math.max(0, state.cronPage), pages - 1);
+
+  // Header line: counts + pagination.
+  const active = jobs?.filter((j) => j.enabled).length ?? 0;
+  const paused = (jobs?.length ?? 0) - active;
+  const counts = jobs ? `  ${dim("·")} ${green(String(active))} ${dim("active ·")} ${yellow(String(paused))} ${dim("paused ·")}` : "";
+  out.push(fit(` ${bold("CRON JOBS")}${counts}  ${dim(`page ${state.cronPage + 1}/${pages} ←/→`)}`, cols));
+
+  const lines: string[] = [];
+  if (!jobs) {
+    lines.push(...panel("CRON JOBS", [dim("loading cron jobs… (redeploy if the agent predates this feature)")], cols));
+  } else if (jobs.length === 0) {
+    lines.push(...panel("CRON JOBS", [dim("no cron jobs yet — ask the agent on X to schedule one")], cols));
+  } else {
+    const slice = jobs.slice(state.cronPage * pageSize, (state.cronPage + 1) * pageSize);
+    const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+    for (const j of slice) {
+      const status = j.enabled
+        ? green("active")
+        : j.consecutiveFailures > 0 ? red("auto-paused") : yellow("paused");
+      const fails = j.consecutiveFailures > 0 ? `  ${red(`${j.consecutiveFailures} consecutive fails`)}` : "";
+      const next = !j.enabled
+        ? dim("—")
+        : j.nextRunAt <= now ? cyan("due now") : cyan(`in ${fmtDuration(j.nextRunAt - now)}`);
+      const last = j.lastRunAt != null ? `${fmtDuration(now - j.lastRunAt)} ${dim("ago")}` : dim("never");
+      const outcome = j.lastError != null
+        ? `${red("error")}   ${red(oneLine(j.lastError))}`
+        : j.lastResult
+          ? `${dim("result".padEnd(PAD))}${oneLine(j.lastResult)}`
+          : `${dim("result".padEnd(PAD))}${dim("—")}`;
+      const title = `${accent(`#${j.id}`)} ${accent("@" + j.creator)} ${dim("·")} ${cyan(j.schedule)} ${dim("·")} ${status} ${dim("·")} ${dim("runs")} ${j.runs}${fails}`;
+      lines.push(...panel(title, [
+        `${dim("prompt".padEnd(PAD))}${oneLine(j.prompt)}`,
+        `${dim("next".padEnd(PAD))}${next}   ${dim("last run")} ${last}`,
+        outcome,
+      ], cols));
+    }
+  }
+
+  out.push(...padRows(lines, bodyRows).map((l) => fit(l, cols)));
+
+  out.push(footerLine(state, [
+    key("←/→", "page"), key("shift+←/→", "status"),
+    key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"),
+    key("q", "quit"),
+  ], cols));
+  return out;
+}
+
 function buildFrame(state: State, cols: number, rows: number): string[] {
+  // Page 2: the cron jobs dashboard (shift+←/→ cycles between the two pages).
+  if (((state.view % 2) + 2) % 2 === 1) return buildCronFrame(state, cols, rows);
+
   // Four columns: LOGO (fixed) | AGENT | TREASURY | SERVER, with three 1-col gaps.
   const logoW = 21;                       // 17-wide logo art + borders/padding
   const usable = cols - 3 - logoW;
@@ -573,15 +692,11 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   out.push(...panel(title, recent, cols));
 
   // Footer: a confirmation prompt when a command is pending, otherwise key hints.
-  const key = (k: string, label: string) => `${accent(k)} ${dim(label)}`;
-  const footer = state.confirm
-    ? `${yellow(state.confirm.prompt)}  ${accent("y")}${dim("/")}${accent("Enter")} ${dim("to confirm, any other key cancels")}`
-    : [
-        key("up/dn", "scroll"), key("g/G", "top/live"), key("←/→", "chart"),
-        key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"),
-        key("q", "quit"),
-      ].join(dim("  ")) + `   ${dim("· safe to quit — reopen with")} ${accent("npx yappr status")}`;
-  out.push(fit(footer, cols));
+  out.push(footerLine(state, [
+    key("up/dn", "scroll"), key("g/G", "top/live"), key("←/→", "chart"), key("shift+←/→", "cron"),
+    key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"),
+    key("q", "quit"),
+  ], cols));
 
   return out;
 }
@@ -623,6 +738,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
     creditUsd: null,
     sysCpu: null, sysMemMb: null, sysDiskUsed: null, scroll: 0, logRows: 0, confirm: null,
     chartIndex: 0,
+    view: 0, cron: null, cronPage: 0,
   };
 
   let renderTimer: NodeJS.Timeout | undefined;
@@ -718,6 +834,10 @@ export async function runStatus(target: { ip: string; password?: string; handle?
   // All-time activity + spend counters, read from the agent's stats summary.
   const refreshStats = () => fetchAgentStats(ssh).then((s) => { if (s) state.stats = s; }).catch(() => {});
 
+  // Cron jobs for the CRON JOBS page. Fetched once at launch (so the first switch
+  // is instant), on every switch to the page, and on the 5s tick while it's shown.
+  const refreshCron = () => fetchCronJobs(ssh).then((c) => { if (c) state.cron = c; }).catch(() => {});
+
   // ── lifecycle commands (footer keys) ──
   // Push a dashboard-originated note into the log feed so command output is visible.
   const note = (msg: string) => { state.logs.push(`\x1b[36m[dashboard]\x1b[0m ${msg}`); if (state.logs.length > 400) state.logs.shift(); };
@@ -762,6 +882,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
   refreshSysUsage();
   refreshCredits();
   refreshStats();
+  refreshCron();
   if (apiKey) {
     resolveEvmAddress(apiKey).then((a) => { state.wallet = a; refreshTreasury(a); }).catch(() => {});
   }
@@ -773,7 +894,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
   if (interactive) {
     process.stdout.write("\x1b[?25l\x1b[2J\x1b[3J\x1b[H"); // hide cursor, clear screen
     renderTimer = setInterval(() => render(state), 250);
-    pm2Timer = setInterval(() => { fetchPm2(ssh).then((p) => { if (p) state.pm2 = p; }).catch(() => {}); refreshSysUsage(); refreshStats(); }, 5000);
+    pm2Timer = setInterval(() => { fetchPm2(ssh).then((p) => { if (p) state.pm2 = p; }).catch(() => {}); refreshSysUsage(); refreshStats(); if (state.view === 1) refreshCron(); }, 5000);
     balanceTimer = setInterval(() => { if (state.wallet) refreshTreasury(state.wallet as `0x${string}`); refreshCredits(); }, BALANCE_INTERVAL_MS);
 
     // Scrollable LOGS. Raw mode lets us read arrow/page keys; since it also swallows
@@ -797,8 +918,25 @@ export async function runStatus(target: { ip: string; password?: string; handle?
         if (s === "s") { state.confirm = { prompt: "Stop yappr?", action: () => void runPm2("stop") }; render(state); return; }
         if (s === "S") { state.confirm = { prompt: "Start yappr?", action: () => void runPm2("start") }; render(state); return; }
         if (s === "d") { state.confirm = { prompt: "Re-deploy yappr? (exits dashboard)", action: redeploy }; render(state); return; }
-        if (s === "\x1b[C") { state.chartIndex = (state.chartIndex + 1) % 4; render(state); return; } // → next chart
-        if (s === "\x1b[D") { state.chartIndex = (state.chartIndex + 3) % 4; render(state); return; } // ← prev chart
+        // shift+←/→ slides between the two pages (cyclical, so both keys work).
+        if (s === "\x1b[1;2C" || s === "\x1b[1;2D") {
+          state.view = (state.view + 1) % 2;
+          if (state.view === 1) refreshCron();
+          render(state);
+          return;
+        }
+        if (s === "\x1b[C") { // → next chart / next cron page
+          if (state.view === 1) state.cronPage++; // buildCronFrame clamps to the last page
+          else state.chartIndex = (state.chartIndex + 1) % 3;
+          render(state);
+          return;
+        }
+        if (s === "\x1b[D") { // ← prev chart / prev cron page
+          if (state.view === 1) state.cronPage = Math.max(0, state.cronPage - 1);
+          else state.chartIndex = (state.chartIndex + 2) % 3;
+          render(state);
+          return;
+        }
         let sc = state.scroll;
         if (s === "\x1b[A" || s === "k") sc += 1;            // up
         else if (s === "\x1b[B" || s === "j") sc -= 1;       // down
@@ -877,8 +1015,14 @@ async function resolveTarget(instanceIdArg?: string): Promise<{ ip: string; pass
 }
 
 // Render one frame with mock data — for eyeballing the layout without a server:
-//   npm run status -- --demo
+//   npm run status -- --demo           # the status page
+//   npm run status -- --demo --cron    # the cron jobs page
 function demo() {
+  const demoCron: CronJobInfo[] = [
+    { id: 1, prompt: "Check the ETH price and store a one-line market note", schedule: "every 30 min", creator: "alice", enabled: true, nextRunAt: Date.now() + 720_000, lastRunAt: Date.now() - 1_080_000, lastResult: "ETH is at $3,012 (+1.2% on the day), gas 14 gwei.", lastError: null, runs: 41, consecutiveFailures: 0 },
+    { id: 2, prompt: "Summarize replies to the pinned tweet and flag anything needing an answer", schedule: "daily at 09:00 Europe/Paris", creator: "bob", enabled: true, nextRunAt: Date.now() + 14_400_000, lastRunAt: Date.now() - 72_000_000, lastResult: "3 new replies, none need an answer.", lastError: null, runs: 6, consecutiveFailures: 0 },
+    { id: 3, prompt: "Claim creator fees if above threshold", schedule: "every 360 min", creator: "alice", enabled: false, nextRunAt: 0, lastRunAt: Date.now() - 200_000_000, lastResult: null, lastError: 'Access denied: "wallet" requires admin privileges.', runs: 9, consecutiveFailures: 3 },
+  ];
   const state: State = {
     ip: "203.0.113.7", handle: "evvrbot", admins: "@alice, @bob", wallet: "0xA1b2C3d4E5f6A7b8C9d0E1f2A3b4C5d6E7f80910",
     stats: { mentions: 37, replies: 29, llmTurns: 84, spentUsd: 0.7345, warns: 1, errors: 0, earnedWeth: 0.0512, devWeth: 0.0123, spentUsdWindow: 96, inferenceUsdWindow: 1.2, earnedWethWindow: 0.004, rateWindowHours: 24,
@@ -893,6 +1037,7 @@ function demo() {
     scroll: 0, logRows: 0,
     confirm: null,
     chartIndex: 0,
+    view: process.argv.includes("--cron") ? 1 : 0, cron: demoCron, cronPage: 0,
     logs: [
       "[2026-06-08 12:30:01] INFO: poll cycle start",
       '[2026-06-08 12:30:02] INFO: new mentions found {"count":2}',
@@ -916,9 +1061,16 @@ function check(cols = 143, rows = 40) {
     specs: { cpu: "1", ram: "951Mi", disk: "23G", os: "Ubuntu 22.04.5 LTS" }, scroll: 0, logRows: 0,
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
     computeHours: 19.5, creditUsd: 4.21, sysCpu: 4, sysMemMb: 740, sysDiskUsed: "9.1G", confirm: null, chartIndex: 0,
+    view: 0, cron: null, cronPage: 0,
     logs: Array.from({ length: 30 }, () => long),
   };
-  const frame = buildFrame(state, cols, rows);
+  // Both pages: the status frame, then the cron frame (with an overlong prompt
+  // and result so truncation is exercised too).
+  state.cron = [
+    { id: 12, prompt: long.repeat(2), schedule: "every 30 min", creator: "alexben0006", enabled: true, nextRunAt: Date.now() + 60_000, lastRunAt: Date.now() - 60_000, lastResult: long.repeat(2), lastError: null, runs: 99, consecutiveFailures: 0 },
+    { id: 13, prompt: "short", schedule: "daily at 09:00 Europe/Paris", creator: "alexben0006", enabled: false, nextRunAt: 0, lastRunAt: null, lastResult: null, lastError: long, runs: 0, consecutiveFailures: 4 },
+  ];
+  const frame = [...buildFrame(state, cols, rows), ...buildFrame({ ...state, view: 1 }, cols, rows)];
   let bad = 0;
   frame.forEach((l, i) => { const w = stringWidth(l); if (w !== cols) { bad++; console.log(`line ${i}: width ${w} != ${cols}  ${JSON.stringify(stripAnsi(l).slice(0, 30))}`); } });
   console.log(bad ? `\n${bad} mismatched line(s)` : `all ${frame.length} lines == ${cols} ✓`);
