@@ -29,7 +29,7 @@ const out = await hooks.onBeforeInference!({ tweet: current, question: current.t
 const ctx = out.context!;
 
 const assert = (cond: boolean, msg: string) => { if (!cond) { console.error("FAIL:", msg); process.exit(1); } };
-assert(ctx.includes("USER MEMORY: your last exchanges with @alice"), "memory block present");
+assert(ctx.includes("USER MEMORY: PAST exchanges between you and @alice"), "memory block present");
 assert(!ctx.includes("question number 56"), "current ask excluded");
 assert(!/question number 6$/m.test(ctx), "oldest entries trimmed (1-6 gone)");
 assert(/question number 7$/m.test(ctx), "entry 7 kept (oldest survivor)");
@@ -39,7 +39,8 @@ assert(ctx.includes("conv 100"), "conversation id rendered");
 // 55 captured → cap 50 keeps 6..55; current (56) pushes out 6 → 7..56 stored,
 // current excluded from rendering → 49 past exchanges shown.
 assert((ctx.match(/\[2026-06-01/g) ?? []).length === 49, "stored cap 50 minus current ask = 49 injected");
-assert(ctx.startsWith("=== ASKER TWEET ==="), "appends to existing context");
+assert(ctx.startsWith("=== USER MEMORY"), "memory prepended, not appended");
+assert(ctx.trimEnd().endsWith("{...}"), "asker tweet stays last (most salient)");
 
 // 3. unknown user → context untouched
 const fresh = tweet(1, { author: { id: "u2", username: "carol", name: "C" } });

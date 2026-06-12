@@ -71,18 +71,21 @@ export const hooks: AgentHooks = {
     mem.setJSON(uid, exchanges.slice(-MAX_EXCHANGES));
   },
 
-  // Inject the user's past exchanges as a context block. The current ask is
-  // already in memory (onMention ran first) but the model sees it as the ASKER
-  // TWEET block, so it's excluded here.
+  // Inject the user's past exchanges as a context block, PREPENDED so the
+  // current ask (ASKER TWEET) stays last and most salient — appended memory
+  // reads like the newest message and the model answers it instead. The current
+  // ask is already in memory (onMention ran first) but the model sees it as the
+  // ASKER TWEET block, so it's excluded here.
   onBeforeInference({ tweet, question, context }) {
     const uid = tweet.author?.id;
     const past = uid ? load(uid).filter((e) => e.id !== tweet.id) : [];
     if (past.length === 0) return { question, context };
     log.debug({ user: tweet.author?.username, exchanges: past.length }, "user-memory: injecting");
     const block =
-      `=== USER MEMORY: your last exchanges with @${tweet.author?.username} (oldest first) ===\n` +
+      `=== USER MEMORY: PAST exchanges between you and @${tweet.author?.username} (oldest first) ===\n` +
+      `These happened BEFORE the current request — background for continuity and recall, not part of the current ask.\n` +
       past.map(render).join("\n");
-    return { question, context: context ? `${context}\n\n${block}` : block };
+    return { question, context: context ? `${block}\n\n${context}` : block };
   },
 
   // Attach our posted answer (the final, possibly hook-edited text) to the

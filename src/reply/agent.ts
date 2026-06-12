@@ -28,6 +28,7 @@ Each tweet block contains the raw tweet JSON as returned by the X API. You may s
 - "${BLOCK.replyTo}" — the tweet the asker replied to (shown when the asker tweet is a reply).
 - "REFERENCED TWEET IN THE ASKER TWEET (ID: ..., TYPE: ...)" — a tweet referenced by the asker (e.g. a quoted tweet); its id and type are in the header.
 - "${BLOCK.asker}" — who asked and what they're asking (the request to handle; NOT the subject).
+- Extra labeled blocks may appear (e.g. "USER MEMORY" — your past exchanges with the asker). They are background from BEFORE this request, for continuity and recall — never the current request, which is always the ${BLOCK.asker}.
 - "this user", "him", "her", "they" → refers to the ${BLOCK.replyTo} author.
 
 ## Protocol
