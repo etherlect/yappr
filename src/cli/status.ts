@@ -577,8 +577,8 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
 
   const agentRows = [
     kv("Handle", accent("@" + state.handle), 7),
-    kv("Admins", state.admins, 7),
     kv("Wallet", wallet, 7),
+    kv("Admins", state.admins, 7),
     kv("Poll", `${POLL_METHOD} ${dim("|")} ${POLL_SECONDS}s`, 7),
     kv("Claim", p?.bootMs ? `in ${cyan("~" + fmtDuration(nextTreasury))}` : dim("-"), 7),
     kv("Runway", runway, 7),
