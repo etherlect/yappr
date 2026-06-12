@@ -105,19 +105,31 @@ async function fetchPrices(tokenAddress: `0x${string}`): Promise<{ eth: number; 
 
 async function fetchBalances(address: `0x${string}`, tokenAddress: `0x${string}`): Promise<Balances | null> {
   try {
-    const erc20 = (addr: `0x${string}`, holder: `0x${string}` = address) =>
-      baseClient.readContract({ address: addr, abi: ERC20_VIEW_ABI, functionName: "balanceOf", args: [holder] }) as Promise<bigint>;
-    const [token, weth, usdc, burned, eth, symbol, decimals, prices] = await Promise.all([
-      erc20(tokenAddress),
-      erc20(WETH_ADDR),
-      erc20(USDC_ADDR),
-      erc20(tokenAddress, BURN_ADDR),
+    // All contract reads ride ONE Multicall3 eth_call: the public Base RPC
+    // rate-limits concurrent requests per IP (HTTP 429 at just a handful), so
+    // firing them individually made the whole fetch fail more often than not
+    // and left the TREASURY panel stuck on "...". RPC requests here: 2 total.
+    const [mc, eth, prices] = await Promise.all([
+      baseClient.multicall({
+        contracts: [
+          { address: tokenAddress, abi: ERC20_VIEW_ABI, functionName: "balanceOf", args: [address] },
+          { address: WETH_ADDR, abi: ERC20_VIEW_ABI, functionName: "balanceOf", args: [address] },
+          { address: USDC_ADDR, abi: ERC20_VIEW_ABI, functionName: "balanceOf", args: [address] },
+          { address: tokenAddress, abi: ERC20_VIEW_ABI, functionName: "balanceOf", args: [BURN_ADDR] },
+          { address: tokenAddress, abi: ERC20_VIEW_ABI, functionName: "symbol" },
+          { address: tokenAddress, abi: ERC20_VIEW_ABI, functionName: "decimals" },
+        ] as const,
+        allowFailure: true,
+      }),
       baseClient.getBalance({ address }),
-      (baseClient.readContract({ address: tokenAddress, abi: ERC20_VIEW_ABI, functionName: "symbol" }) as Promise<string>).catch(() => "TOKEN"),
-      (baseClient.readContract({ address: tokenAddress, abi: ERC20_VIEW_ABI, functionName: "decimals" }) as Promise<number>).catch(() => 18),
       fetchPrices(tokenAddress),
     ]);
-    const dec = Number(decimals);
+    const big = (i: number): bigint | null => (mc[i].status === "success" ? (mc[i].result as bigint) : null);
+    const [token, weth, usdc, burned] = [big(0), big(1), big(2), big(3)];
+    // Balances must be right or absent — a failed read keeps the "..." placeholder.
+    if (token === null || weth === null || usdc === null || burned === null) return null;
+    const symbol = mc[4].status === "success" ? (mc[4].result as string) : "TOKEN";
+    const dec = mc[5].status === "success" ? Number(mc[5].result) : 18;
     let usdTotal: number | null = null;
     let usd: Balances["usd"] = null;
     if (prices) {
