@@ -147,7 +147,7 @@ Edit the Markdown files — no code needed:
 
 Each skill is a folder containing a `skill.md` and an optional `handler.ts`:
 
-- `skill.md` frontmatter: `name`, `description`, `access` (`all` or `admin`). The body tells the LLM how to call the skill and interpret its result.
+- `skill.md` frontmatter: `name`, `description`, `access` (`all`, `admin` or `holder`), and for holder skills `min_holding` (whole tokens of the agent's token the asker must hold; omit or `0` to only require a known Bankr wallet). The body tells the LLM how to call the skill and interpret its result.
 - `handler.ts` exports `handler(params, tweet)` returning `{ text }`, `{ data }`, or `{ mediaUrl }`. **Omit it** for a context-only skill — the body becomes always-on guidance injected into the system prompt rather than a callable tool (see `bad-behavior`). Import any engine helpers and types from the **`yappr`** package — never with relative `../../src/...` paths:
 
   ```ts
@@ -162,7 +162,7 @@ Each skill is a folder containing a `skill.md` and an optional `handler.ts`:
 
 The agent loop calls handler skills as tools, one per turn, seeing each result before deciding the next step. This allows chaining dependent skills (e.g. "search for X and then check my balance").
 
-Copy one of the starter skills (e.g. `config/skills/x/`) to start, or add a new folder. `access: admin` skills are only invocable by handles in `ADMIN_HANDLES`, enforced in code regardless of the LLM's decision. Set `AGENT_MAX_STEPS` (default `4`) to control how many skill calls the loop may make before forcing a reply.
+Copy one of the starter skills (e.g. `config/skills/x/`) to start, or add a new folder. `access: admin` skills are only invocable by handles in `ADMIN_HANDLES`, enforced in code regardless of the LLM's decision. `access: holder` skills are gated the same way (in code, never trusted to the LLM): the asker's identity comes from the tweet itself and their holdings from the DB cache maintained by the holder hook (`config/hooks/holder.ts`) — so the gate can't be talked around with prompt injection, and removing the hook fails closed (every holder skill denies). Admins bypass holder gates. Set `AGENT_MAX_STEPS` (default `4`) to control how many skill calls the loop may make before forcing a reply.
 
 ### Storing data from skills & hooks
 

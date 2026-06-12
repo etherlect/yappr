@@ -14,12 +14,17 @@ export type SkillHandler = (
   tweet: Tweet,
 ) => Promise<SkillResult>;
 
-export type SkillAccess = "all" | "admin";
+export type SkillAccess = "all" | "admin" | "holder";
 
 export type SkillDef = {
   name: string;
   description: string;
   body: string;           // skill.md content after frontmatter — injected into the agent system prompt
-  access: SkillAccess;    // "all" = any user, "admin" = ADMIN_HANDLES only
+  access: SkillAccess;    // "all" = any user, "admin" = ADMIN_HANDLES only, "holder" = holders of the agent's token
+  // For `access: holder` skills: minimum balance of the agent's token (whole
+  // tokens) the asker must hold, from the `min_holding:` frontmatter key.
+  // Enforced in code against DB-cached holdings (src/skills/holder-access.ts).
+  // 0/absent = any user with a known Bankr wallet qualifies.
+  minHolding?: number;
   handler?: SkillHandler; // omit for context-only skills (no code execution, LLM uses skill body as reply guidance)
 };

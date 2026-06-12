@@ -2,6 +2,7 @@ import type { Logger } from "pino";
 import type { Tweet } from "../x/types.js";
 import { chat, agentSystem } from "../llm/index.js";
 import { getSkill } from "../skills/registry.js";
+import { checkHolderAccess } from "../skills/holder-access.js";
 import { config } from "../config.js";
 import { BLOCK } from "./context-blocks.js";
 
@@ -165,6 +166,17 @@ async function runSkillStep(
   if (skill.access === "admin" && !isAdmin) {
     log.warn({ id: tweet.id, skill: skillName, author: tweet.author?.username }, "admin skill denied: not admin");
     return { observation: `Access denied: "${skillName}" requires admin privileges.`, denied: true };
+  }
+
+  // Holder gate — like the admin check, decided here in code from the pipeline's
+  // tweet author and DB-cached holdings, never from model-controlled params.
+  // Admins bypass it (they already have every skill).
+  if (skill.access === "holder" && !isAdmin) {
+    const gate = checkHolderAccess(tweet, skill.minHolding ?? 0);
+    if (!gate.ok) {
+      log.warn({ id: tweet.id, skill: skillName, author: tweet.author?.username, reason: gate.reason }, "holder skill denied");
+      return { observation: `Access denied: ${gate.reason}.`, denied: true };
+    }
   }
 
   if (!skill.handler) {

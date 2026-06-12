@@ -27,6 +27,10 @@ export { log } from "./log.js";
 export { config } from "./config.js";
 export { payFetch, paidUsd, walletAddress } from "./wallet.js";
 
+// ── Holder gate — the code-side check behind `access: holder` skills, exported
+// so skill handlers can apply finer-grained holding tiers themselves ──
+export { checkHolderAccess } from "./skills/holder-access.js";
+
 // ── Storage for skills/hooks — namespaced KV (skillStore) for the common case,
 // withSchema for skills that need their own tables in the shared DB ──
 export { skillStore } from "./storage.js";

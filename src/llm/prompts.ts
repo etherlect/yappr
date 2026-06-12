@@ -85,7 +85,11 @@ export async function loadPrompts(skills: SkillDef[]): Promise<Prompts> {
     }),
   ].filter(Boolean).join("\n\n");
 
-  const publicSkills = skills.filter((s) => s.access === "all");
+  // Non-admins see everything except admin skills. Holder skills ARE listed —
+  // qualification is per-asker and per-moment (holdings change), so the agent
+  // loop's code-side gate decides at call time; unqualified callers just get the
+  // access-denied observation, which the model relays.
+  const publicSkills = skills.filter((s) => s.access !== "admin");
 
   return {
     agent: buildAgentPrompt(preamble(false), publicSkills, AGENT_INSTRUCTIONS),

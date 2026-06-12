@@ -122,5 +122,7 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
 - **`TREASURY_DRY_RUN=true`** makes every treasury/wallet write a logged no-op — use
   it to verify cycle logic without spending. `submitTx`/`treasury.*` honor it.
 - **Skill access is enforced in code** (`reply/agent.ts`), never trusted to the LLM:
-  `access: admin` skills only run for handles in `ADMIN_HANDLES`.
+  `access: admin` skills only run for handles in `ADMIN_HANDLES`; `access: holder`
+  skills need DB-cached holdings ≥ `min_holding` (`skills/holder-access.ts`, fed by
+  the `holder` hook; admins bypass).
 - Run `npm run typecheck` after changes.
