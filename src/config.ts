@@ -36,6 +36,8 @@ export const config = {
   pollMethod: (optional("POLL_METHOD", "search").toLowerCase() === "mentions" ? "mentions" : "search") as "mentions" | "search",
 
   agentMaxSteps: numeric("AGENT_MAX_STEPS", "4"),
+  // Used by both the reply loop (LLM gateway) and Bankr agent jobs (Max Mode,
+  // agent-prompt.ts) — both draw on the same gateway model catalog.
   llmModel: optional("LLM_MODEL", "deepseek-v4-flash"),
   pollIntervalMs: numeric("POLL_INTERVAL_MS", "20000"),
   treasuryIntervalMs: numeric("TREASURY_INTERVAL_MS", "3600000"),

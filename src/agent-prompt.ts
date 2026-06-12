@@ -3,18 +3,24 @@ import { log } from "./log.js";
 import { bankrApi } from "./bankr.js";
 import { sleep } from "./util.js";
 
-// Limited to 100 calls/day on non-Club accounts — use for ad-hoc/manual tasks,
-// not for scheduled treasury operations.
+// Always submitted in Max Mode (an explicit model id), which bills the job
+// per-request from the LLM credit balance instead of counting against the
+// account's prompt quota (100/day for non-Club) — so callers don't need to
+// ration these. Uses the same model as the reply loop (LLM_MODEL): both run
+// against the LLM gateway's model catalog, so one knob configures all inference.
 export async function agentPrompt(prompt: string): Promise<string> {
   if (config.treasuryDryRun) {
     log.info({ prompt }, "agent-prompt [dry run]");
     return `[dry run] ${prompt}`;
   }
 
-  log.info({ prompt }, "agent-prompt submitting");
+  log.info({ prompt, model: config.llmModel }, "agent-prompt submitting");
   const { jobId } = await bankrApi<{ jobId: string }>(config.bankrApiKey, "/agent/prompt", {
     method: "POST",
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({
+      prompt,
+      maxMode: { enabled: true, model: config.llmModel },
+    }),
   });
   log.info({ jobId }, "agent-prompt job queued");
 
