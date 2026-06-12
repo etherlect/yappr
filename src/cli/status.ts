@@ -72,6 +72,11 @@ const CRON_QUERY_CMD = process.env.STATUS_CRON_CMD || "cd /yappr && node node_mo
 // ─── on-chain balances (Base) ──────────────────────────────────────────────────
 
 const WETH_ADDR = "0x4200000000000000000000000000000000000006" as `0x${string}`;
+// Where the treasury cycle burns the agent's token (same constant as treasury/index.ts).
+const BURN_ADDR = "0x000000000000000000000000000000000000dead" as `0x${string}`;
+// Every Bankr token launch is a fixed-supply Clanker deploy: 100B tokens, always —
+// so the burned % of supply is computed against this constant rather than fetched.
+const TOKEN_TOTAL_SUPPLY = 100_000_000_000;
 const USDC_ADDR = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as `0x${string}`;
 const ERC20_VIEW_ABI = [
   { name: "balanceOf", type: "function", stateMutability: "view", inputs: [{ name: "o", type: "address" }], outputs: [{ type: "uint256" }] },
@@ -81,7 +86,7 @@ const ERC20_VIEW_ABI = [
 
 const baseClient = createPublicClient({ chain: base, transport: http() });
 
-type Balances = { token: bigint; weth: bigint; eth: bigint; usdc: bigint; symbol: string; decimals: number; usdTotal: number | null; ethUsd: number | null; usd: { token: number; weth: number; eth: number; usdc: number } | null };
+type Balances = { token: bigint; weth: bigint; eth: bigint; usdc: bigint; burned: bigint; symbol: string; decimals: number; usdTotal: number | null; ethUsd: number | null; usd: { token: number; weth: number; eth: number; usdc: number } | null };
 
 // Spot USD prices for the treasury assets, via DefiLlama's free coins API. Returns
 // null prices on failure so the total degrades to "unavailable" rather than wrong.
@@ -100,12 +105,13 @@ async function fetchPrices(tokenAddress: `0x${string}`): Promise<{ eth: number; 
 
 async function fetchBalances(address: `0x${string}`, tokenAddress: `0x${string}`): Promise<Balances | null> {
   try {
-    const erc20 = (addr: `0x${string}`) =>
-      baseClient.readContract({ address: addr, abi: ERC20_VIEW_ABI, functionName: "balanceOf", args: [address] }) as Promise<bigint>;
-    const [token, weth, usdc, eth, symbol, decimals, prices] = await Promise.all([
+    const erc20 = (addr: `0x${string}`, holder: `0x${string}` = address) =>
+      baseClient.readContract({ address: addr, abi: ERC20_VIEW_ABI, functionName: "balanceOf", args: [holder] }) as Promise<bigint>;
+    const [token, weth, usdc, burned, eth, symbol, decimals, prices] = await Promise.all([
       erc20(tokenAddress),
       erc20(WETH_ADDR),
       erc20(USDC_ADDR),
+      erc20(tokenAddress, BURN_ADDR),
       baseClient.getBalance({ address }),
       (baseClient.readContract({ address: tokenAddress, abi: ERC20_VIEW_ABI, functionName: "symbol" }) as Promise<string>).catch(() => "TOKEN"),
       (baseClient.readContract({ address: tokenAddress, abi: ERC20_VIEW_ABI, functionName: "decimals" }) as Promise<number>).catch(() => 18),
@@ -123,7 +129,7 @@ async function fetchBalances(address: `0x${string}`, tokenAddress: `0x${string}`
       };
       usdTotal = usd.token + usd.weth + usd.eth + usd.usdc;
     }
-    return { token, weth, eth, usdc, symbol, decimals: dec, usdTotal, ethUsd: prices?.eth ?? null, usd };
+    return { token, weth, eth, usdc, burned, symbol, decimals: dec, usdTotal, ethUsd: prices?.eth ?? null, usd };
   } catch {
     return null;
   }
@@ -288,6 +294,15 @@ function fmtEth(v: bigint): string {
   if (n === 0) return "0";
   if (n < 0.0001) return "<0.0001";
   return n.toFixed(4);
+}
+
+// Percentage of the fixed 100B supply, with enough precision to show early burns
+// (e.g. "0.0025%") without padding mature ones (e.g. "12.4%").
+function fmtSupplyPct(tokens: number): string {
+  const p = (tokens / TOKEN_TOTAL_SUPPLY) * 100;
+  if (p === 0) return "0%";
+  if (p >= 1) return `${p.toFixed(1)}%`;
+  return `${p.toPrecision(2)}%`;
 }
 
 const fmtUsdc = (v: bigint) => `$${Number(formatUnits(v, 6)).toFixed(2)}`;
@@ -641,13 +656,18 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   // price in parens, e.g. "0.0512 WETH ($153.60)".
   const earnedUsd = b?.ethUsd != null ? s.earnedWeth * b.ethUsd : null;
   const earnedStr = `${green(`${s.earnedWeth.toFixed(4)} WETH`)}${earnedUsd != null ? " " + dim(`(${fmtSpent(earnedUsd)})`) : ""}`;
+  // Burned = the agent's token held at the dead address, as a quantity and a % of
+  // the fixed 100B supply every Bankr launch ships with.
+  const burnedStr = b
+    ? `${accent(fmtToken(b.burned, b.decimals))} ${dim(`(${fmtSupplyPct(Number(formatUnits(b.burned, b.decimals)))})`)}`
+    : dim("...");
   out.push(...panel("ACTIVITY", [justify([
     `${String(s.mentions)} ${dim("mentions")}`,
     `${String(s.replies)} ${dim("replies")}`,
     `${String(s.llmTurns)} ${dim("llm requests")}`,
     `${earnedStr} ${dim("earned")}`,
     `${red(fmtSpent(s.spentUsd))} ${dim("spent")}`,
-    `${yellow(String(s.warns))} ${dim("warnings")}`,
+    `${burnedStr} ${dim("burned")}`,
     `${red(String(s.errors))} ${dim("errors")}`,
   ], cols - 4)], cols));
 
@@ -1030,7 +1050,7 @@ function demo() {
       chart: (() => { const sp: number[] = [], ew: number[] = []; let a = 0, b2 = 0; for (let i = 0; i < 60; i++) { a += 0.012; b2 += i > 15 ? 0.0009 : 0; sp.push(a); ew.push(b2); } const day = { spendUsd: sp, earnedWeth: ew, startMs: Date.now() - 5 * 3_600_000, endMs: Date.now() }; const x: number[] = [], inf: number[] = [], c: number[] = [], ea: number[] = []; for (let i = 0; i < 24; i++) { x.push(i >= 12 ? 0.02 + (i % 3) * 0.005 : 0); inf.push(i >= 12 ? 0.003 : 0); c.push(i === 18 ? 0.06 : 0); ea.push(i >= 14 ? 0.000005 + (i % 4) * 0.000002 : 0); } const byType = { startMs: Date.now() - 23 * 3_600_000, xapi: x, inference: inf, compute: c, earned: ea }; return { day, byType }; })() },
     pm2: { status: "online", bootMs: Date.now() - 8_120_000, restarts: 2, mem: 149 * 1024 * 1024, cpu: 3 },
     specs: { cpu: "2", ram: "1.9Gi", disk: "25G", os: "Ubuntu 24.04.1 LTS" },
-    balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
+    balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, burned: 2_450_000n * 10n ** 18n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
     computeHours: 19.5,
     creditUsd: 4.21,
     sysCpu: 3, sysMemMb: 600, sysDiskUsed: "12G",
@@ -1059,7 +1079,7 @@ function check(cols = 143, rows = 40) {
     stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, devWeth: 0, spentUsdWindow: 12, inferenceUsdWindow: 1, earnedWethWindow: 0.001, rateWindowHours: 24, spentByType: { "x-api": 8, inference: 1, compute: 3 }, chart: { day: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.2), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.00005), startMs: Date.now() - 24 * 3_600_000, endMs: Date.now() }, byType: { startMs: Date.now() - 23 * 3_600_000, xapi: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.02 : 0), inference: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.003 : 0), compute: Array.from({ length: 24 }, (_, i) => i === 16 ? 0.05 : 0), earned: Array.from({ length: 24 }, (_, i) => i >= 14 ? 0.000006 : 0) } } },
     pm2: { status: "online", bootMs: Date.now() - 945_000, restarts: 1, mem: 110 * 1024 * 1024, cpu: 0.4 },
     specs: { cpu: "1", ram: "951Mi", disk: "23G", os: "Ubuntu 22.04.5 LTS" }, scroll: 0, logRows: 0,
-    balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
+    balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, burned: 2_450_000n * 10n ** 18n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
     computeHours: 19.5, creditUsd: 4.21, sysCpu: 4, sysMemMb: 740, sysDiskUsed: "9.1G", confirm: null, chartIndex: 0,
     view: 0, cron: null, cronPage: 0,
     logs: Array.from({ length: 30 }, () => long),
