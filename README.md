@@ -97,7 +97,7 @@ All have sensible defaults; set them in `.env` to override:
 |-----|---------|-------------|
 | `POLL_METHOD` | `search` | How mentions are polled: `search` (/tweets/search mentioning the handle) or `mentions` (the dedicated /tweets/mentions endpoint) |
 | `POLL_INTERVAL_MS` | `20000` | Mention poll cadence |
-| `AGENT_MAX_STEPS` | `4` | Max skill calls per reply before the loop forces a final answer |
+| `AGENT_MAX_STEPS` | `6` | Max skill calls per reply before the loop forces a final answer |
 | `LLM_MODEL` | `deepseek-v4-flash` | Model served by the Bankr LLM Gateway |
 | `VISION_MODEL` | `gemini-2.5-flash` | Vision-capable model used only when a mention carries an image (see [Image understanding](#image-understanding)) |
 | `TREASURY_INTERVAL_MS` | `3600000` | Treasury cycle cadence (1h) |
@@ -188,7 +188,7 @@ Each skill is a folder containing a `skill.md` and an optional `handler.ts`:
 
 The agent loop calls handler skills as tools, one per turn, seeing each result before deciding the next step. This allows chaining dependent skills (e.g. "search for X and then check my balance").
 
-Copy one of the starter skills (e.g. `config/skills/x/`) to start, or add a new folder. `access: admin` skills are only invocable by handles in `ADMIN_HANDLES`, enforced in code regardless of the LLM's decision. Set `AGENT_MAX_STEPS` (default `4`) to control how many skill calls the loop may make before forcing a reply.
+Copy one of the starter skills (e.g. `config/skills/x/`) to start, or add a new folder. `access: admin` skills are only invocable by handles in `ADMIN_HANDLES`, enforced in code regardless of the LLM's decision. Set `AGENT_MAX_STEPS` (default `6`) to control how many skill calls the loop may make before forcing a reply.
 
 ### Gating a skill behind your token
 

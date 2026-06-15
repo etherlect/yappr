@@ -35,7 +35,7 @@ export const config = {
   // "mentions" uses the dedicated /tweets/mentions endpoint. Defaults to "search".
   pollMethod: (optional("POLL_METHOD", "search").toLowerCase() === "mentions" ? "mentions" : "search") as "mentions" | "search",
 
-  agentMaxSteps: numeric("AGENT_MAX_STEPS", "4"),
+  agentMaxSteps: numeric("AGENT_MAX_STEPS", "6"),
   // Used by both the reply loop (LLM gateway) and Bankr agent jobs (Max Mode,
   // agent-prompt.ts) — both draw on the same gateway model catalog.
   llmModel: optional("LLM_MODEL", "deepseek-v4-flash"),
