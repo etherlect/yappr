@@ -30,7 +30,6 @@
   },
   "scripts": {
     "dev": "tsx --conditions=development watch src/yappr.ts",
-    "dev:old": "tsx --conditions=development watch src/yappr.ts --process-old",
     "start": "node dist/src/yappr.js",
     "build": "tsc",
     "typecheck": "tsc --noEmit",

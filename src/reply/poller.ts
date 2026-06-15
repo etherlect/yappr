@@ -31,7 +31,7 @@ export function createPoller(log: Logger) {
   let isRunning = false;
   let timer: NodeJS.Timeout | null = null;
 
-  async function cycle({ processOld = false }: { processOld?: boolean } = {}) {
+  async function cycle() {
     if (isRunning) {
       log.warn("previous poll still running, skipping tick");
       return;
@@ -42,22 +42,19 @@ export function createPoller(log: Logger) {
       const response = await searchMentions(config.agentHandle);
       const tweets = (response.data || []).slice().sort((a, b) => (idGt(a.id, b.id) ? 1 : -1));
 
-      // No baseline yet: unless we're backfilling (processOld), skip pre-existing
-      // mentions by anchoring the baseline — to the newest mention if any exist, or
-      // to startup time otherwise. Keyed on lastSeenId === null (not a one-shot flag)
-      // so an empty first poll just retries next tick instead of leaving it unset.
-      if (state.lastSeenId === null && !processOld) {
+      // No baseline yet: skip pre-existing mentions by anchoring the baseline — to the
+      // newest mention if any exist, or to startup time otherwise. Keyed on
+      // lastSeenId === null (not a one-shot flag) so an empty first poll just retries
+      // next tick instead of leaving it unset.
+      if (state.lastSeenId === null) {
         state.lastSeenId = tweets.at(-1)?.id ?? snowflakeForNow();
         await saveState(state);
         log.info({ lastSeenId: state.lastSeenId }, "baseline established on startup; skipping backfill");
         return;
       }
 
-      // processOld with no baseline → every mention is fresh (backfill them all).
       const baseline = state.lastSeenId;
-      const fresh = baseline === null
-        ? tweets
-        : tweets.filter((t) => idGt(t.id, baseline));
+      const fresh = tweets.filter((t) => idGt(t.id, baseline));
       if (fresh.length === 0) return;
 
       log.info({ count: fresh.length }, "new mentions found");
@@ -76,11 +73,11 @@ export function createPoller(log: Logger) {
     }
   }
 
-  async function start({ processOld = false }: { processOld?: boolean } = {}) {
+  async function start() {
     state = await loadState();
-    log.info({ lastSeenId: state.lastSeenId, processOld }, "poller starting");
-    void cycle({ processOld });
-    timer = setInterval(() => void cycle({}), config.pollIntervalMs);
+    log.info({ lastSeenId: state.lastSeenId }, "poller starting");
+    void cycle();
+    timer = setInterval(() => void cycle(), config.pollIntervalMs);
   }
 
   function stop() {

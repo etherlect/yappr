@@ -18,8 +18,6 @@ import { loadSkills } from "./skills/loader.js";
 import { initSkills } from "./skills/registry.js";
 import { startCron } from "./cron/runner.js";
 
-const processOld = process.argv.includes("--process-old");
-
 async function main() {
   if (config.burnBps + config.devTokenBps > 10000) {
     throw new Error(`BURN_BPS (${config.burnBps}) + DEV_TOKEN_BPS (${config.devTokenBps}) exceeds 10000`);
@@ -49,7 +47,7 @@ async function main() {
   const treasury = getTreasury();
 
   const poller = createPoller(log);
-  await poller.start({ processOld });
+  await poller.start();
 
   // First treasury/claim cycle runs a short delay after launch (not at t=0). Right at
   // boot the wallet/Bankr fee indexer isn't always ready, so the claimable-fee check

@@ -8,7 +8,7 @@ import { skillStore, log, type AgentHooks, type Tweet } from "yappr";
 // memory survives restarts/redeploys and rides along in backups.
 
 type Exchange = {
-  id: string;            // the user's tweet id (dedupes --process-old replays)
+  id: string;            // the user's tweet id (dedup key — never record the same mention twice)
   at: number;            // epoch ms from the tweet's created_at (sort + render)
   text: string;          // what the user said
   conversationId?: string;
@@ -65,7 +65,7 @@ export const hooks: AgentHooks = {
     const uid = t.author?.id;
     if (!uid) return;
     const exchanges = load(uid);
-    if (exchanges.some((e) => e.id === t.id)) return; // already seen (backfill replay)
+    if (exchanges.some((e) => e.id === t.id)) return; // already recorded — skip
     exchanges.push(toExchange(t));
     exchanges.sort((a, b) => a.at - b.at);
     mem.setJSON(uid, exchanges.slice(-MAX_EXCHANGES));

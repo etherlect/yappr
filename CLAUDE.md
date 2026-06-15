@@ -20,7 +20,6 @@ workspace `README.md` one level up. The CLI lives in `src/cli/` and ships as the
 
 ```bash
 npm run dev        # run the agent from source (tsx watch; needs a .env here)
-npm run dev:old    # same, but backfill & reply to existing mentions (--process-old)
 npm run typecheck  # tsc --noEmit — run this after any change
 npm run build      # compile to dist/  (the instance consumes dist/)
 ```

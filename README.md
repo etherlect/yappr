@@ -391,7 +391,7 @@ After `npx yappr init`, fill in `.env` and run the agent against your `config/`:
 npx yappr start
 ```
 
-On startup the agent advances its baseline to the newest mention and only replies to mentions that arrive afterward. To instead backfill and reply to existing mentions, run `npx yappr start --process-old`.
+On a first run (empty database) the agent anchors its baseline to the newest mention and only replies to mentions posted afterward. On a restart it resumes from the last mention it processed — the watermark persists in the DB, which survives restarts and redeploys — so it also replies to any mentions that arrived while it was down.
 
 ## Dry run
 
