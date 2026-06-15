@@ -833,9 +833,21 @@ async function main() {
     return pw;
   }
 
+  // Drop a saved value from both the .env file and the live process — used when a
+  // destroyed instance's stale id/host/password must not shadow a fresh provision.
+  async function clearEnvVar(key: string): Promise<void> {
+    const content = await readFile(envPath, "utf8").catch(() => "");
+    await writeFile(envPath, removeEnvVarInContent(content, key));
+    delete process.env[key];
+  }
+
   const existingComputeInstanceId = !isUnset(process.env.COMPUTE_INSTANCE_ID)
     ? process.env.COMPUTE_INSTANCE_ID!
     : "";
+
+  // Flipped on when an existing instance turns out to be destroyed/expired and the
+  // user opts to provision a replacement — routes into the fresh-provision flow below.
+  let needFreshProvision = !existingComputeInstanceId;
 
   if (existingComputeInstanceId) {
     // ── Step 4: existing compute ────────────────────────────────────────────
@@ -887,11 +899,34 @@ async function main() {
 
       // ── Step 5: extend compute ────────────────────────────────────────────
       step(5, TOTAL_STEPS, "Extending compute");
-      await spin("Paying for +24h via x402…", () => extendComputeInstance(bankrApiKey, address as `0x${string}`, instanceId), "Compute extended by 24h");
-      instance = await fetchComputeInstance(bankrApiKey, address as `0x${string}`, instanceId);
-      ip = computeInstanceIp(instance) ?? ip;
+      try {
+        await spin("Paying for +24h via x402…", () => extendComputeInstance(bankrApiKey, address as `0x${string}`, instanceId), "Compute extended by 24h");
+        instance = await fetchComputeInstance(bankrApiKey, address as `0x${string}`, instanceId);
+        ip = computeInstanceIp(instance) ?? ip;
+      } catch (err) {
+        // A destroyed/expired instance can't be extended — the provider has already
+        // reclaimed it (typically once remaining hours went negative, as here). Offer
+        // to provision a fresh instance and rewire .env instead of dead-ending.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/destroy|expir|not\s*found|no\s*such|410|404/i.test(msg)) throw err;
+        warn(`Could not extend compute: ${msg}`);
+        warn("This instance has been destroyed by the provider and can't be extended.");
+        if (!await confirm("Provision a fresh compute instance and update .env?", true)) {
+          console.log("  Aborted.");
+          process.exit(0);
+        }
+        // Drop the dead instance's saved id/host/password so they don't shadow the
+        // new one (COMPUTE_HOST + resolveSshPassword read these back later).
+        for (const key of ["COMPUTE_INSTANCE_ID", "COMPUTE_HOST", "COMPUTE_SSH_PASSWORD"]) {
+          await clearEnvVar(key);
+        }
+        instance = null; instanceId = ""; ip = ""; sshPassword = "";
+        needFreshProvision = true;
+      }
     }
-  } else {
+  }
+
+  if (needFreshProvision) {
     // ── Step 4: select compute ──────────────────────────────────────────────
     step(4, TOTAL_STEPS, "Selecting compute");
 
