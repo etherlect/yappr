@@ -20,11 +20,18 @@ export type Tweet = {
   entities?: {
     mentions?: { username: string }[];
     media?: {
+      // "photo" | "video" | "animated_gif" — only photos are sent to the vision model.
+      type?: string;
+      // Direct CDN URL of the image (e.g. https://pbs.twimg.com/media/….jpg).
+      media_url_https?: string;
       features?: {
         all?: { tags?: { screen_name: string }[] };
       };
     }[];
   };
+  // Parallel media list the X API also returns; carries the same media_url. Used as
+  // a fallback when entities.media is absent. (Declared because we read it at runtime.)
+  media_metadata?: { media_key?: string; media_url?: string }[];
   public_metrics?: PublicMetrics;
   author?: {
     id: string;

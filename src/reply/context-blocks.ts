@@ -18,3 +18,13 @@ export function referencedBlockLabel(id: string, type: string): string {
 export function contextBlock(label: string, body: string): string {
   return `=== ${label} ===\n${body}`;
 }
+
+// An image to send to the vision model, tagged with the tweet block it came from
+// (e.g. "ASKER TWEET (id 123)") so the model can be told which image belongs where.
+export type ContextImage = { url: string; source: string };
+
+// Caption emitted as a text part immediately before image N, so the model knows
+// which tweet each attached image belongs to (ids tie back to the JSON blocks above).
+export function imageCaption(index: number, source: string): string {
+  return `Image ${index} — attached to the ${source}:`;
+}

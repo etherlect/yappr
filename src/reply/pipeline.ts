@@ -1,13 +1,13 @@
 import type { Logger } from "pino";
 import type { Tweet } from "../x/types.js";
-import { getTweets, postReply } from "../x/client.js";
+import { getTweets, postReply, tweetImageUrls } from "../x/client.js";
 import { runAgentLoop } from "./agent.js";
 import {
   runOnMention, runShouldReply, runOnBeforeInference,
   runOnAfterInference, runOnBeforeReply, runOnAfterReply,
 } from "../hooks/registry.js";
 import { shouldReply, replyToScreenName } from "./gating.js";
-import { BLOCK, referencedBlockLabel, contextBlock } from "./context-blocks.js";
+import { BLOCK, referencedBlockLabel, contextBlock, type ContextImage } from "./context-blocks.js";
 import { config } from "../config.js";
 import { recordReply } from "../stats.js";
 
@@ -35,7 +35,13 @@ export async function processTweet(t: Tweet, log: Logger): Promise<void> {
 
   const ctx = await fetchContext(t, log);
   const askingTweet = contextBlock(BLOCK.asker, JSON.stringify(t, null, 2));
-  let context = ctx ? `${ctx}\n\n${askingTweet}` : askingTweet;
+  let context = ctx?.body ? `${ctx.body}\n\n${askingTweet}` : askingTweet;
+
+  // Images to show the vision model: the asker's own photos plus any on the tweets
+  // it references (e.g. "what's in the image above"), each tagged with its source
+  // tweet and deduped by URL (asker wins when a photo appears in more than one).
+  const askerImages: ContextImage[] = tweetImageUrls(t).map((url) => ({ url, source: `${BLOCK.asker} (id ${t.id})` }));
+  const images = dedupeImages([...askerImages, ...(ctx?.images ?? [])]);
 
   try {
     // onBeforeInference receives the asker tweet (for per-user logic like memory
@@ -49,7 +55,7 @@ export async function processTweet(t: Tweet, log: Logger): Promise<void> {
 
     // deniedSkills is ignored for live mentions: the model's reply already
     // tells the asker about the denial; it only drives cron failure handling.
-    let replyText = (await runAgentLoop(context, isAdmin, t, log)).text;
+    let replyText = (await runAgentLoop(context, isAdmin, t, log, images)).text;
 
     replyText = await runOnAfterInference(t.text, replyText);
 
@@ -68,10 +74,19 @@ export async function processTweet(t: Tweet, log: Logger): Promise<void> {
   }
 }
 
+// Drop duplicate images by URL, keeping the first occurrence (and thus its source
+// label) — so a photo on both the asker tweet and a tweet it quotes is sent once,
+// attributed to the asker.
+function dedupeImages(images: ContextImage[]): ContextImage[] {
+  const seen = new Set<string>();
+  return images.filter((img) => !seen.has(img.url) && (seen.add(img.url), true));
+}
+
 // Fetch the conversation root and/or the reply-to tweet (one paid getTweets call)
-// and render them into the context blocks the model reads. Returns undefined when
-// the mention is a standalone tweet with nothing to fetch.
-async function fetchContext(t: Tweet, log: Logger): Promise<string | undefined> {
+// and render them into the context blocks the model reads, plus any images they
+// carry (tagged with their source tweet, for the vision path). Returns undefined
+// when the mention is a standalone tweet with nothing to fetch.
+async function fetchContext(t: Tweet, log: Logger): Promise<{ body?: string; images: ContextImage[] } | undefined> {
   const refs = t.referenced_tweets ?? [];
   const replyToId = refs.find((r) => r.type === "replied_to")?.id;
   // Other references carried on the asker tweet (e.g. a "quoted" tweet) — fetched
@@ -101,21 +116,31 @@ async function fetchContext(t: Tweet, log: Logger): Promise<string | undefined> 
   }
 
   const parts: string[] = [];
+  const images: ContextImage[] = [];
+  const collect = (tweet: Tweet, source: string) =>
+    images.push(...tweetImageUrls(tweet).map((url) => ({ url, source })));
 
   if (wantsRoot) {
     const root = fetched.find((x) => x.id === t.conversation_id);
-    if (root) parts.push(contextBlock(BLOCK.root, JSON.stringify(root, null, 2)));
+    if (root) {
+      parts.push(contextBlock(BLOCK.root, JSON.stringify(root, null, 2)));
+      collect(root, `${BLOCK.root} (id ${root.id})`);
+    }
   }
   if (replyToId) {
     const replyTo = fetched.find((x) => x.id === replyToId);
-    if (replyTo) parts.push(contextBlock(BLOCK.replyTo, JSON.stringify(replyTo, null, 2)));
+    if (replyTo) {
+      parts.push(contextBlock(BLOCK.replyTo, JSON.stringify(replyTo, null, 2)));
+      collect(replyTo, `${BLOCK.replyTo} (id ${replyTo.id})`);
+    }
   }
   for (const ref of otherRefs) {
     const refTweet = fetched.find((x) => x.id === ref.id);
     if (refTweet) {
       parts.push(contextBlock(referencedBlockLabel(ref.id, ref.type), JSON.stringify(refTweet, null, 2)));
+      collect(refTweet, referencedBlockLabel(ref.id, ref.type));
     }
   }
 
-  return parts.length ? parts.join("\n\n") : undefined;
+  return parts.length || images.length ? { body: parts.length ? parts.join("\n\n") : undefined, images } : undefined;
 }

@@ -99,6 +99,7 @@ All have sensible defaults; set them in `.env` to override:
 | `POLL_INTERVAL_MS` | `20000` | Mention poll cadence |
 | `AGENT_MAX_STEPS` | `4` | Max skill calls per reply before the loop forces a final answer |
 | `LLM_MODEL` | `deepseek-v4-flash` | Model served by the Bankr LLM Gateway |
+| `VISION_MODEL` | `gemini-2.5-flash` | Vision-capable model used only when a mention carries an image (see [Image understanding](#image-understanding)) |
 | `TREASURY_INTERVAL_MS` | `3600000` | Treasury cycle cadence (1h) |
 | `BURN_BPS` | `5000` | Share of claimed token fees to burn (basis points; `0` disables) |
 | `DEV_ADDRESS` | unset | Recipient of the optional dev cut (`none`/blank disables) |
@@ -161,6 +162,12 @@ Edit the Markdown files — no code needed:
 - **Any other `.md`** you drop in `config/context/` is auto-loaded as its own section (heading derived from the filename, e.g. `trading-rules.md` → `## Trading Rules`), sorted by filename, and honors the same audience markers. Use these for extra standing knowledge or rules.
 
 > The agentic loop protocol (the JSON contract the model must emit, plus how it reads the context blocks) is **not** a config file — it's tightly coupled to the parser, so it lives in `src/reply/agent.ts` (`AGENT_INSTRUCTIONS`) and is injected automatically. A file named `agent.md` here is reserved and ignored.
+
+## Image understanding
+
+When a mention — or a tweet it replies to, quotes, or shares a thread root with — has a photo attached, the reply loop downloads the image and sends it to a vision model so the agent can actually **see** it: answer "what's in this image?", read text/charts, describe a screenshot, etc. It's automatic — there's nothing to wire up in `config/`.
+
+Routing is per-mention to keep costs down: text-only mentions stay on the cheap `LLM_MODEL`, and only mentions carrying an image are routed to `VISION_MODEL` (default `gemini-2.5-flash`) for that reply — so you pay vision rates only when there's an image to look at. `VISION_MODEL` must be a model whose input modalities include `image`; see [bankr.bot/llm](https://bankr.bot/llm) for the catalog and pricing. Only photos are sent (videos and GIFs are skipped), and the per-call cost is tracked in the spend ledger like any other inference.
 
 ## Skills (`config/skills/`)
 

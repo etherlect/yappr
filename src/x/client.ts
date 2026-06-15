@@ -127,6 +127,21 @@ export function extractTweetId(raw: string): string {
   return raw.match(/\/status\/(\d+)/)?.[1] ?? raw.trim();
 }
 
+// Direct CDN URLs of the still images attached to a tweet (photos only — video /
+// animated_gif are skipped). Reads entities.media first, falling back to the
+// parallel media_metadata list, and dedupes. Used by the reply loop to attach the
+// image to a vision model when a mention carries one.
+export function tweetImageUrls(tweet: Tweet): string[] {
+  const urls = new Set<string>();
+  for (const m of tweet.entities?.media ?? []) {
+    if ((m.type ?? "photo") === "photo" && m.media_url_https) urls.add(m.media_url_https);
+  }
+  for (const m of tweet.media_metadata ?? []) {
+    if (m.media_url) urls.add(m.media_url);
+  }
+  return [...urls];
+}
+
 export async function getTweetById(id: string): Promise<Tweet> {
   return get<Tweet>("/tweets/by/id", { id });
 }

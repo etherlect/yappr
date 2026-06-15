@@ -9,7 +9,32 @@ import type { Prompts } from "./prompts.js";
 // with the prompts assembled from config/; `agentSystem` returns the system prompt
 // for a turn, choosing the admin or public variant and prefixing today's date.
 
-export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+// A message's content is either plain text (the common case) or, for a vision
+// turn, an array of parts mixing text with image_url parts. The image url is a
+// base64 data URL we build with imageDataUrl() so the model gets the pixels
+// regardless of whether the gateway can fetch a remote URL itself.
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+export type ChatMessage = { role: "system" | "user" | "assistant"; content: string | ContentPart[] };
+
+// Download an image and inline it as a base64 data URL. Returns null on any
+// failure (network, timeout, non-image) so the caller can fall back to a text-only
+// turn rather than aborting the reply. Not an x402 call — these are public X CDN
+// URLs (pbs.twimg.com) — so it uses plain fetch, not payFetch.
+export async function imageDataUrl(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) return null;
+    const contentType = res.headers.get("content-type") ?? "image/jpeg";
+    if (!contentType.startsWith("image/")) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    return `data:${contentType};base64,${buf.toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
 
 let _prompts: Prompts | null = null;
 
@@ -29,10 +54,12 @@ const LLM_TIMEOUT_MS = envNumber("LLM_TIMEOUT_MS", 120_000);
 
 type ModelPricing = { input: number; output: number; cacheRead: number };
 
-let _pricing: ModelPricing | null = null;
-let _pricingInFlight: Promise<ModelPricing | null> | null = null;
+// Pricing is cached per model id — the reply loop now uses two models (text +
+// vision), each priced and cost-tracked independently.
+const _pricing = new Map<string, ModelPricing>();
+const _pricingInFlight = new Map<string, Promise<ModelPricing | null>>();
 
-async function fetchModelPricing(): Promise<ModelPricing | null> {
+async function fetchModelPricing(model: string): Promise<ModelPricing | null> {
   const key = process.env.BANKR_LLM_KEY || config.bankrApiKey;
   try {
     const res = await fetch(`${LLM_URL}/v1/models`, {
@@ -41,7 +68,7 @@ async function fetchModelPricing(): Promise<ModelPricing | null> {
     });
     if (!res.ok) return null;
     const body = (await res.json()) as { data?: Array<{ id: string; pricing?: any }> };
-    const p = (body.data ?? []).find((m) => m.id === config.llmModel)?.pricing;
+    const p = (body.data ?? []).find((m) => m.id === model)?.pricing;
     if (!p || p.unit !== "million_tokens") return null;
     const input = Number(p.input) || 0;
     return { input, output: Number(p.output) || 0, cacheRead: p.cache_read != null ? Number(p.cache_read) : input };
@@ -50,14 +77,22 @@ async function fetchModelPricing(): Promise<ModelPricing | null> {
   }
 }
 
-// Per-model pricing, fetched once and cached. Concurrent callers share one in-flight
-// fetch; a failed fetch leaves the cache empty so a later call transparently retries.
-async function modelPricing(): Promise<ModelPricing | null> {
-  if (_pricing) return _pricing;
-  if (!_pricingInFlight) {
-    _pricingInFlight = fetchModelPricing().then((p) => { _pricing = p; _pricingInFlight = null; return p; });
+// Per-model pricing, fetched once per model and cached. Concurrent callers share one
+// in-flight fetch per model; a failed fetch leaves that model's cache empty so a
+// later call transparently retries.
+async function modelPricing(model: string): Promise<ModelPricing | null> {
+  const cached = _pricing.get(model);
+  if (cached) return cached;
+  let inFlight = _pricingInFlight.get(model);
+  if (!inFlight) {
+    inFlight = fetchModelPricing(model).then((p) => {
+      if (p) _pricing.set(model, p);
+      _pricingInFlight.delete(model);
+      return p;
+    });
+    _pricingInFlight.set(model, inFlight);
   }
-  return _pricingInFlight;
+  return inFlight;
 }
 
 // Exact USD cost of one completion from its token usage + the model's per-1M pricing.
@@ -75,9 +110,14 @@ function inferenceCostUsd(usage: any, p: ModelPricing): number {
 // lazy-loads pricing too — but prefetching keeps the first reply from paying the
 // /v1/models round-trip and surfaces a missing-pricing condition up front.
 export async function loadModelPricing(): Promise<void> {
-  const p = await modelPricing();
-  if (p) log.info({ model: config.llmModel, pricing: p }, "LLM pricing loaded (USD per 1M tokens)");
-  else log.warn({ model: config.llmModel }, "LLM pricing unavailable — inference spend will not be tracked this run");
+  // Warm both the text and vision models so neither pays the /v1/models round-trip
+  // on its first reply, and a missing-pricing condition surfaces up front.
+  const models = [...new Set([config.llmModel, config.visionModel])];
+  await Promise.all(models.map(async (model) => {
+    const p = await modelPricing(model);
+    if (p) log.info({ model, pricing: p }, "LLM pricing loaded (USD per 1M tokens)");
+    else log.warn({ model }, "LLM pricing unavailable — inference spend will not be tracked this run");
+  }));
 }
 
 export function setPrompts(prompts: Prompts): void {
@@ -89,17 +129,35 @@ function getPrompts(): Prompts {
   return _prompts;
 }
 
+// Render a message's content for logs. Image parts are summarised (mime + base64
+// size) so the request log shows how the image is sent without dumping the raw,
+// multi-KB data URL.
+function renderContent(content: string | ContentPart[]): string {
+  if (typeof content === "string") return content;
+  return content
+    .map((p) => {
+      if (p.type === "text") return p.text;
+      const url = p.image_url.url;
+      const isData = url.startsWith("data:");
+      const mime = isData ? url.slice(5, url.indexOf(";")) : "remote-url";
+      const bytes = isData ? url.slice(url.indexOf(",") + 1).length : url.length;
+      return `[image_url: ${mime}, ${bytes}B base64]`;
+    })
+    .join("\n");
+}
+
 export async function chat(
   messages: ChatMessage[],
-  opts: { jsonMode?: boolean } = {},
+  opts: { jsonMode?: boolean; model?: string } = {},
 ): Promise<string> {
   const t = Date.now();
+  const model = opts.model ?? config.llmModel;
   recordLlm(); // one inference request (counter; USDC cost recorded below from usage)
   // Full context sent to the LLM this turn (every message, verbatim). Each
   // message is separated by an empty line so the contexts are readable in logs.
-  const rendered = messages.map((m) => `[${m.role}]\n${m.content}`).join("\n\n");
+  const rendered = messages.map((m) => `[${m.role}]\n${renderContent(m.content)}`).join("\n\n");
   log.info(
-    { model: config.llmModel, jsonMode: opts.jsonMode ?? false },
+    { model, jsonMode: opts.jsonMode ?? false },
     `LLM request (${messages.length} messages):\n\n${rendered}\n`,
   );
   const res = await fetch(`${LLM_URL}/v1/chat/completions`, {
@@ -110,7 +168,7 @@ export async function chat(
     },
     signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
     body: JSON.stringify({
-      model: config.llmModel,
+      model,
       messages,
       ...(opts.jsonMode ? { response_format: { type: "json_object" } } : {}),
     }),
@@ -130,7 +188,7 @@ export async function chat(
   // Best-effort: never let costing/recording throw into the agent's reply path.
   let usd: number | undefined;
   try {
-    const p = await modelPricing();
+    const p = await modelPricing(model);
     if (p && json.usage) {
       usd = inferenceCostUsd(json.usage, p);
       recordSpend("inference", usd);

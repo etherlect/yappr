@@ -39,6 +39,14 @@ export const config = {
   // Used by both the reply loop (LLM gateway) and Bankr agent jobs (Max Mode,
   // agent-prompt.ts) — both draw on the same gateway model catalog.
   llmModel: optional("LLM_MODEL", "deepseek-v4-flash"),
+  // Vision-capable model the reply loop routes to ONLY when a mention carries an
+  // image (otherwise it stays on the cheaper text-only llmModel). Must be a model
+  // whose `/v1/models` input modalities include "image" (see bankr.bot/llm).
+  visionModel: optional("VISION_MODEL", "gemini-2.5-flash"),
+  // Cap on how many images (across the asker tweet + the tweets it references) are
+  // sent to the vision model in one reply — each image is thousands of prompt
+  // tokens, so this bounds the cost of an image-heavy thread.
+  maxImages: numeric("MAX_IMAGES", "8"),
   pollIntervalMs: numeric("POLL_INTERVAL_MS", "20000"),
   treasuryIntervalMs: numeric("TREASURY_INTERVAL_MS", "3600000"),
   burnBps: numeric("BURN_BPS", "5000"),
