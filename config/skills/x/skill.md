@@ -116,8 +116,12 @@ Follow or unfollow an account.
 ## Other
 
 ### article
-Get the full text of an X article.
-- `id` (required) — the article's tweet ID or URL.
+Get the full text of an X article (long-form post).
+- When: the tweet you're asked about is an X article — its `entities.urls` expands to an `x.com/i/article/…` link.
+- `id` (required) — the **tweet ID of the article tweet**, resolved like any other tweet ID:
+  - If that article tweet is the one in front of you (its own `entities.urls` expands to `x.com/i/article/…`), use that tweet's own `id` field.
+  - If you're following a link to the article, use the `…/status/<id>` ID extracted from that URL (the same as for the `tweet` action).
+  - ⚠️ Never use the number inside the `x.com/i/article/<id>` link itself — that is a separate internal article ID, not a tweet ID, and the fetch will fail.
 
 ### list
 Get a list's details.
