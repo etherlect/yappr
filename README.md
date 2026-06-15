@@ -120,7 +120,7 @@ config/
   hooks/     # lifecycle logic
 ```
 
-### Personality & prompts (`config/context/`)
+## Context files (`config/context/`)
 
 Edit the Markdown files — no code needed:
 
@@ -143,7 +143,7 @@ Edit the Markdown files — no code needed:
 
 > The agentic loop protocol (the JSON contract the model must emit, plus how it reads the context blocks) is **not** a config file — it's tightly coupled to the parser, so it lives in `src/reply/agent.ts` (`AGENT_INSTRUCTIONS`) and is injected automatically. A file named `agent.md` here is reserved and ignored.
 
-### Skills (`config/skills/`)
+## Skills (`config/skills/`)
 
 Each skill is a folder containing a `skill.md` and an optional `handler.ts`:
 
@@ -164,7 +164,7 @@ The agent loop calls handler skills as tools, one per turn, seeing each result b
 
 Copy one of the starter skills (e.g. `config/skills/x/`) to start, or add a new folder. `access: admin` skills are only invocable by handles in `ADMIN_HANDLES`, enforced in code regardless of the LLM's decision. `access: holder` skills are gated the same way (in code, never trusted to the LLM): the asker's identity comes from the tweet itself and their holdings from the DB cache maintained by the holder hook (`config/hooks/holder.ts`) — so the gate can't be talked around with prompt injection, and removing the hook fails closed (every holder skill denies). Admins bypass holder gates. Set `AGENT_MAX_STEPS` (default `4`) to control how many skill calls the loop may make before forcing a reply.
 
-### Storing data from skills & hooks
+## Storing data
 
 Skills get persistent storage in the agent's own SQLite DB — **don't open your own
 files**: data in the shared DB lives at `DB_PATH` (outside the dir wiped on redeploy)
@@ -224,7 +224,7 @@ run your own `ALTER TABLE` for that.
 Inspecting data is plain SQLite — locally or against a backup:
 `sqlite3 yappr.db "SELECT * FROM skill_kv WHERE ns='remember'"`.
 
-### Hooks (`config/hooks/`)
+## Hooks (`config/hooks/`)
 
 Drop any `.ts` file in `config/hooks/` that exports a `hooks` object — add logic without touching `src/`. See `config/hooks/example.ts` for all available hooks:
 

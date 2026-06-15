@@ -9,7 +9,7 @@ import { createConnection } from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { NodeSSH } from "node-ssh";
-import { input, password, confirm as inquirerConfirm, select } from "@inquirer/prompts";
+import { input as inputPrompt, password as passwordPrompt, confirm as confirmPrompt, select as selectPrompt } from "@inquirer/prompts";
 import ora, { type Ora } from "ora";
 import { bankrApi, deployTokenLaunch } from "../bankr.js";
 import { createBankrSigner, createPayFetch } from "../x402.js";
@@ -28,6 +28,7 @@ import {
 import {
   dim, bold, green, yellow, red, accent, border, YAPPR_LOGO,
   kv as kvRow, fit, panel, sideBySide, centerRows,
+  setTheme, detectTerminalTheme, themeLine,
 } from "./ui.js";
 import { isUnset, setEnvVar, setEnvVarInContent, removeEnvVarInContent } from "./env.js";
 import { connectXViaBrowser } from "./x-login.js";
@@ -36,6 +37,34 @@ import { latestLocalBackup, remoteFileExists, backupLabel, REMOTE_DB_PATH } from
 import { hostKeyConfig } from "./host-key.js";
 
 const execFileAsync = promisify(execFile);
+
+// Inquirer renders its own prompt line (prefix + message + answer) through its
+// theme, not our console.log — so without this it falls back to inquirer's
+// default green "?" and the terminal's own foreground, clashing with the
+// Base-blue palette the rest of deploy (and the status dashboard) uses. Paint
+// the prefix/message/answer in the current palette so prompts match too; the
+// palette is auto-detected (dark/light) at the top of main().
+const promptTheme = {
+  prefix: { idle: accent("?"), done: green("✔") },
+  style: {
+    message: (text: string) => themeLine(text),
+    answer: (text: string) => accent(text),
+    // dim() only adds the dim attribute (no color) → the "(Y/n)" hint would fall
+    // back to the terminal's own foreground (green). Layer dim over the palette
+    // color so it stays a muted blue.
+    defaultAnswer: (text: string) => dim(accent(text)),
+    highlight: (text: string) => accent(text),
+  },
+};
+const withTheme = <C extends { theme?: unknown }>(cfg: C): C =>
+  ({ ...cfg, theme: { ...promptTheme, ...(cfg.theme as object ?? {}) } });
+
+const input: typeof inputPrompt = (cfg, ctx) => inputPrompt(withTheme(cfg), ctx);
+const password: typeof passwordPrompt = (cfg, ctx) => passwordPrompt(withTheme(cfg), ctx);
+const inquirerConfirm: typeof confirmPrompt = (cfg, ctx) => confirmPrompt(withTheme(cfg), ctx);
+function select<Value>(cfg: Parameters<typeof selectPrompt<Value>>[0], ctx?: Parameters<typeof selectPrompt<Value>>[1]) {
+  return selectPrompt<Value>(withTheme(cfg), ctx);
+}
 
 // Engine package root. This file is <root>/dist/src/cli/deploy.js in prod (or
 // <root>/src/cli/deploy.ts in dev), so the root is three levels up. Used to build +
@@ -95,13 +124,20 @@ function stopSpinner(spinner: Ora): void {
   if (process.stdout.isTTY) process.stdout.cursorTo(0);
 }
 
+// ora draws its frame straight to the stream (not via our themed console.log),
+// so its label text would render in the terminal's own foreground (green).
+// themeText paints it in the palette; stripAnsi recovers the raw label for the
+// static done line, which ok() re-themes.
+const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+const themeText = (s: string) => themeLine(stripAnsi(s));
+
 // Run an async task behind a spinner, then resolve to a static line that uses
 // the same ✓/✗ glyphs and spacing as ok()/fail() so everything stays aligned.
 async function spin<T>(label: string, fn: (spinner: Ora) => Promise<T>, doneLabel?: string): Promise<T> {
-  const spinner = ora({ text: label, indent: 2 }).start();
+  const spinner = ora({ text: themeText(label), indent: 2 }).start();
   try {
     const result = await fn(spinner);
-    const text = spinner.text;
+    const text = stripAnsi(spinner.text);
     stopSpinner(spinner);
     ok(doneLabel ?? text);
     return result;
@@ -339,6 +375,29 @@ async function main() {
   // screen (2J), the scrollback buffer (3J), and homes the cursor (H). Skipped
   // when stdout isn't a TTY (piped/CI) so we don't write escape codes into logs.
   if (process.stdout.isTTY) process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+
+  // Match the terminal's background (dark/light) so deploy's colors track the
+  // status dashboard. Deploy has no manual toggle, so it's always automatic —
+  // detect once up front (the OSC query borrows stdin) before any prompts.
+  // STATUS_THEME still pins a palette explicitly for both scripts.
+  if (!process.env.STATUS_THEME) {
+    const detected = await detectTerminalTheme().catch(() => null);
+    if (detected) setTheme(detected);
+  }
+
+  // Paint every printed line in the palette's default text color, exactly like
+  // the status dashboard themes its frame (see ui.themeLine). The deploy helpers
+  // only color specific glyphs/labels and leave message text uncolored — which
+  // otherwise falls back to the terminal's own foreground (often green) and
+  // clashes with the Base-blue accents. themeLine re-arms the palette color after
+  // each ANSI reset. Only when stdout is a TTY (don't write SGR into piped logs).
+  if (process.stdout.isTTY) {
+    for (const m of ["log", "error"] as const) {
+      const orig = console[m].bind(console);
+      console[m] = (...args: unknown[]) =>
+        orig(...args.map((a) => (typeof a === "string" ? themeLine(a) : a)));
+    }
+  }
 
   const TOTAL_STEPS = 7;
 
@@ -740,7 +799,7 @@ async function main() {
     const maxMinutes = Math.round(timeoutMs / 60_000);
     return spin(`Waiting for instance IP — this can take up to ${maxMinutes} min…`, async (spinner) => {
       const inst = await waitForComputeIp(bankrApiKey, address as `0x${string}`, id, timeoutMs);
-      spinner.text = computeInstanceIp(inst) ? `IP assigned: ${computeInstanceIp(inst)}` : "Instance IP not ready (timed out)";
+      spinner.text = themeText(computeInstanceIp(inst) ? `IP assigned: ${computeInstanceIp(inst)}` : "Instance IP not ready (timed out)");
       return inst;
     });
   }
