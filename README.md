@@ -18,6 +18,25 @@ A self-sustaining X/Twitter reply agent you install as an npm package and extend
                     ▲ funded by token fees
 ```
 
+## What you can build
+
+yappr is more than a novelty bot — it's a self-funding presence on X that works for you around the clock. Because every agent is just a `config/` folder, you decide what it does and who it serves.
+
+**Showcase and promote your business.** Point a yappr at your product's X account and it becomes an always-on storefront: it answers questions about what you sell from your [context files](#context-files-configcontext), shares links, demos and booking pages, and turns idle @mentions into attention and traffic — all in your brand's voice, day and night. Your business keeps getting eyes on X even while you sleep, and the agent pays for its own reach out of its token's trading fees.
+
+**Reward and gate your audience with your own token.** Any skill can be [gated by token holdings](#skills-configskills) — "hold N of the agent's token to use this." That turns your most valuable capabilities into a reason to hold: holders get the premium skill, everyone else gets a teaser and a nudge to buy in.
+
+A few agents worth shipping:
+
+- **Product concierge** — answers pre-sales and support questions from your docs, shares pricing and booking links, and routes hot leads. Gate a `priority-support` or `book-a-call` skill to holders so paying customers jump the queue.
+- **Token-gated alpha desk** — a `deep-research` or `market-scan` skill that runs real analysis (it can call any paid API, and the token covers the bill). Non-holders get a one-line preview; holders get the full report.
+- **Brand promoter** — watches mentions of your company (or competitors) and replies with helpful, on-brand takes plus a link back to you. Free reach on X, on autopilot.
+- **Community rewards bot** — a holder-only skill that drops perks, whitelist spots, or shout-outs, making the token genuinely useful to hold.
+- **Data / API wrapper** — wrap any paid API (sports, weather, on-chain data, search) behind a skill; the wallet pays per call and the token keeps it funded, so you can offer a paid data service without ever touching a credit card.
+- **Personal AI presence** — answers questions about you and your work, shares your latest posts, and books intros — your always-online proxy on X.
+
+Each of these is a folder in `config/skills/` plus a few [context files](#context-files-configcontext) — no engine changes. See [Customising the agent](#customising-the-agent) to start.
+
 ## Before you run `yappr deploy`
 
 Set these up on Bankr first (in order):
@@ -162,7 +181,22 @@ Each skill is a folder containing a `skill.md` and an optional `handler.ts`:
 
 The agent loop calls handler skills as tools, one per turn, seeing each result before deciding the next step. This allows chaining dependent skills (e.g. "search for X and then check my balance").
 
-Copy one of the starter skills (e.g. `config/skills/x/`) to start, or add a new folder. `access: admin` skills are only invocable by handles in `ADMIN_HANDLES`, enforced in code regardless of the LLM's decision. `access: holder` skills are gated the same way (in code, never trusted to the LLM): the asker's identity comes from the tweet itself and their holdings from the DB cache maintained by the holder hook (`config/hooks/holder.ts`) — so the gate can't be talked around with prompt injection, and removing the hook fails closed (every holder skill denies). Admins bypass holder gates. Set `AGENT_MAX_STEPS` (default `4`) to control how many skill calls the loop may make before forcing a reply.
+Copy one of the starter skills (e.g. `config/skills/x/`) to start, or add a new folder. `access: admin` skills are only invocable by handles in `ADMIN_HANDLES`, enforced in code regardless of the LLM's decision. Set `AGENT_MAX_STEPS` (default `4`) to control how many skill calls the loop may make before forcing a reply.
+
+### Gating a skill behind your token
+
+Set `access: holder` plus `min_holding` in a skill's `skill.md` to require the asker to hold the agent's own token — a built-in way to make holding worthwhile (premium support, alpha, perks, paid data, …):
+
+```yaml
+---
+name: alpha
+description: In-depth research and market analysis.
+access: holder
+min_holding: 1000   # asker must hold ≥ 1000 of the agent's token
+---
+```
+
+The gate is enforced **in code on every call**, never trusted to the LLM: the asker's identity comes from the tweet itself and their balance from the DB cache the holder hook (`config/hooks/holder.ts`) maintains — so it can't be talked around with prompt injection, and removing the hook fails closed (every holder skill denies). Admins always bypass holder gates. Holder skills are still listed in the prompt for everyone — qualification is per-asker and shifts as balances move — so an unqualified caller simply gets an access-denied reply the agent relays, which doubles as a natural nudge to go buy in. Use `min_holding: 0` (or omit it) to require only a known Bankr wallet rather than a balance.
 
 ## Storing data
 
