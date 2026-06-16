@@ -28,6 +28,9 @@ const AUTHENTICATED_PATHS = new Set<string>([
   "/tweets/bookmark",
   "/tweets/retweet",
   "/users/following",
+  "/users/setProfile",
+  // (/tweets/mediaUpload is also authenticated, but uploadMedia injects auth itself —
+  // it's multipart/form-data and bypasses the JSON post()/withAuth() path.)
 ]);
 
 function withAuth<T extends Record<string, unknown>>(path: string, params: T): T {
@@ -196,18 +199,24 @@ export async function getQuoteTweets(id: string, next_token?: string): Promise<S
   return get<SearchResponse>("/tweets/quote_tweets", { id, next_token });
 }
 
-export async function postTweet(text: string, opts: { replyTo?: string; quoteTweetId?: string } = {}): Promise<void> {
+export async function postTweet(
+  text: string,
+  opts: { replyTo?: string; quoteTweetId?: string; mediaIds?: string[] } = {},
+): Promise<void> {
   // /tweets/long supports the full character limit; plain /tweets rejects longer text.
+  // Both accept `medias` — a comma-separated list of media IDs from uploadMedia() — to
+  // attach images to the post.
   await post("/tweets/long", {
     text,
     ...(opts.replyTo ? { in_reply_to_tweet_id: opts.replyTo } : {}),
     ...(opts.quoteTweetId ? { quote_tweet_id: opts.quoteTweetId } : {}),
+    ...(opts.mediaIds?.length ? { medias: opts.mediaIds.join(",") } : {}),
   });
 }
 
-export async function postReply(tweetId: string, text: string): Promise<void> {
-  log.info({ tweetId }, "POST x-api reply");
-  await postTweet(text, { replyTo: tweetId });
+export async function postReply(tweetId: string, text: string, mediaIds?: string[]): Promise<void> {
+  log.info({ tweetId, media: mediaIds?.length ?? 0 }, "POST x-api reply");
+  await postTweet(text, { replyTo: tweetId, mediaIds });
 }
 
 export async function deleteTweet(id: string): Promise<void> {
@@ -236,6 +245,53 @@ export async function bookmarkTweet(id: string): Promise<void> {
 
 export async function unbookmarkTweet(id: string): Promise<void> {
   await del("/tweets/bookmark", { id });
+}
+
+// ─── media ─────────────────────────────────────────────────────────────────
+
+// Upload an image to X and return its media_id — attach it to a post via
+// postTweet({ mediaIds: [id] }). This endpoint is multipart/form-data with auth on the
+// query string (per the twit.sh spec), so it bypasses the JSON post() helper and builds
+// the request itself. Accepts raw bytes (Blob / Uint8Array / ArrayBuffer).
+export async function uploadMedia(
+  file: Blob | ArrayBuffer | Uint8Array,
+  opts: { filename?: string; contentType?: string } = {},
+): Promise<string> {
+  const path = "/tweets/mediaUpload";
+  const url = buildUrl(path, auth()); // auth_token + ct0 on the query string
+  // Cast at the Blob boundary: TS 5.7's generic Uint8Array<ArrayBufferLike> doesn't
+  // structurally match lib.dom's BlobPart (ArrayBufferView<ArrayBuffer>), though the
+  // bytes are valid — see microsoft/TypeScript#59417.
+  const blob = file instanceof Blob ? file : new Blob([file as BlobPart], { type: opts.contentType ?? "application/octet-stream" });
+  const form = new FormData();
+  form.append("file", blob, opts.filename ?? "image.png");
+  const t = Date.now();
+  log.info({ path }, `x-api POST ${path}`);
+  // No Content-Type header: fetch sets multipart/form-data with the correct boundary.
+  const res = await payFetch(url, { method: "POST", body: form });
+  if (!res.ok) {
+    const body = await res.text();
+    log.warn({ path, status: res.status, ms: Date.now() - t }, `x-api POST ${path} failed`);
+    throw new Error(`POST ${path} failed: ${res.status} ${body}`);
+  }
+  const json = (await res.json().catch(() => undefined)) as any;
+  // The success body is undocumented in the spec; pull the id from the usual
+  // Twitter/twit.sh field names (media_id_string is the canonical Twitter one).
+  const id = json?.media_id_string ?? json?.media_id ?? json?.data?.media_id_string ?? json?.data?.media_id ?? json?.id ?? json?.data?.id;
+  log.info({ path, status: res.status, ms: Date.now() - t, usd: paidUsd(res), mediaId: id }, `x-api POST ${path} ok`);
+  if (id == null) throw new Error(`mediaUpload: no media id in response ${JSON.stringify(json)}`);
+  return String(id);
+}
+
+// Convenience: fetch an image by URL (plain fetch — public CDN, not x402) and upload it,
+// returning the media_id. Pairs with image-generation skills that produce a hosted URL.
+export async function uploadMediaFromUrl(url: string): Promise<string> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`fetch media ${url} failed: ${res.status}`);
+  const contentType = res.headers.get("content-type") ?? "image/png";
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const filename = new URL(url).pathname.split("/").pop() || "image.png";
+  return uploadMedia(bytes, { filename, contentType });
 }
 
 // ─── users ──────────────────────────────────────────────────────────────────
@@ -272,6 +328,19 @@ export async function followUser(opts: { id?: string; username?: string }): Prom
 
 export async function unfollowUser(opts: { id?: string; username?: string }): Promise<void> {
   await del("/users/following", opts as Record<string, string>);
+}
+
+// Update the authenticated user's profile. Only the fields you pass are sent; an
+// omitted field is left unchanged (pass an empty string to clear one).
+export async function setProfile(
+  opts: { name?: string; bio?: string; location?: string; url?: string },
+): Promise<void> {
+  await post("/users/setProfile", {
+    ...(opts.name !== undefined ? { name: opts.name } : {}),
+    ...(opts.bio !== undefined ? { bio: opts.bio } : {}),
+    ...(opts.location !== undefined ? { location: opts.location } : {}),
+    ...(opts.url !== undefined ? { url: opts.url } : {}),
+  });
 }
 
 // ─── articles ───────────────────────────────────────────────────────────────

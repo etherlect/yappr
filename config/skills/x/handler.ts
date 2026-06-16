@@ -7,7 +7,8 @@ import {
   likeTweet, unlikeTweet, retweetTweet, unretweetTweet,
   bookmarkTweet, unbookmarkTweet,
   getUserByUsername, getUserById, getUsers, searchUsers,
-  getFollowers, getFollowing, followUser, unfollowUser,
+  getFollowers, getFollowing, followUser, unfollowUser, setProfile,
+  uploadMediaFromUrl,
   getArticle,
   getList, getListMembers, getListFollowers, getListTweets,
   getCommunity, getCommunityMembers, getCommunityPosts,
@@ -31,6 +32,16 @@ function ack(label: string, fn: (id: string) => Promise<void>, verb: string): Ac
 }
 
 const ID = "tweet id or URL";
+
+// Upload one or more image URLs (comma-separated) to X and return their media_ids to
+// attach to a post. Bounded to X's 4-images-per-tweet limit.
+async function uploadMediaUrls(raw?: string): Promise<string[] | undefined> {
+  const urls = (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (urls.length === 0) return undefined;
+  const ids: string[] = [];
+  for (const url of urls.slice(0, 4)) ids.push(await uploadMediaFromUrl(url));
+  return ids.length ? ids : undefined;
+}
 
 const actions: Record<string, Action> = {
   // ── tweets (read) ──
@@ -56,6 +67,7 @@ const actions: Record<string, Action> = {
     await postTweet(p.text, {
       replyTo: p.reply_to ? extractTweetId(p.reply_to) : undefined,
       quoteTweetId: p.quote_id ? extractTweetId(p.quote_id) : undefined,
+      mediaIds: await uploadMediaUrls(p.media_url),
     });
     return { text: "posted" };
   },
@@ -90,6 +102,14 @@ const actions: Record<string, Action> = {
     if (!p.username && !p.id) return { text: "missing username or id" };
     await unfollowUser({ id: p.id, username: p.username });
     return { text: `unfollowed ${p.username ?? p.id}` };
+  },
+  "set-profile": async (p) => {
+    const fields = { name: p.name, bio: p.bio, location: p.location, url: p.url };
+    if (Object.values(fields).every((v) => v === undefined)) {
+      return { text: "missing at least one profile field (name, bio, location, url)" };
+    }
+    await setProfile(fields);
+    return { text: "profile updated" };
   },
 
   // ── other ──

@@ -49,6 +49,7 @@ Each turn emit exactly one JSON object — no markdown, no extra text:
 \`\`\`
 
 Rules:
+- The \`action\` field is ALWAYS the literal string \`"use_skill"\` or \`"reply"\` — never a skill's name. The skill you want goes only in the separate \`skill\` field. For example, to run the generate-image skill emit \`{"action":"use_skill","skill":"generate-image","params":{...}}\` — NOT \`{"action":"generate-image",...}\` or \`{"action":"generate_image",...}\`.
 - Only call a skill when the request clearly needs it — answer directly when you can.
 - If the request is about an attached image, you can already see it — answer directly from the image. Never invent or call a skill (e.g. "detect_image_content") to look at it.
 - Call one skill per turn. Use the observation from each call to inform the next.
@@ -68,11 +69,16 @@ export function parseStep(raw: string): AgentStep | null {
     if (parsed.action === "reply" && typeof parsed.text === "string") {
       return { action: "reply", text: parsed.text };
     }
+    // Skill call. The canonical form is {"action":"use_skill","skill":"..."}, but models
+    // sometimes mislabel `action` (e.g. {"action":"generate_image","skill":"generate-image"}).
+    // An explicit `skill` string is unambiguous intent, so accept it regardless of what
+    // `action` says. A call with no `skill` field still fails here and is retried — the
+    // prompt forbids putting the skill name in `action`, so we don't guess from it.
     if (
-      parsed.action === "use_skill" &&
       typeof parsed.skill === "string" &&
       parsed.params !== null &&
-      typeof parsed.params === "object"
+      typeof parsed.params === "object" &&
+      !Array.isArray(parsed.params)
     ) {
       return {
         action: "use_skill",
@@ -91,7 +97,9 @@ export function parseStep(raw: string): AgentStep | null {
 // (admin skill, non-admin caller). Live replies ignore it (the reply text already
 // tells the asker); the cron runner uses it to mark the run failed, so a job that
 // can never do its work auto-pauses instead of burning inference forever.
-export type AgentLoopResult = { text: string; deniedSkills: string[] };
+// `mediaUrls` are image URLs produced by skills this turn (e.g. generate-image's output)
+// for the pipeline to upload and attach to the reply — see runSkillStep / pipeline.ts.
+export type AgentLoopResult = { text: string; deniedSkills: string[]; mediaUrls: string[] };
 
 export async function runAgentLoop(
   context: string,
@@ -153,6 +161,9 @@ export async function runAgentLoop(
     { role: "user", content: userContent },
   ];
   const deniedSkills: string[] = [];
+  // Image URLs skills emit this turn (capped at X's 4-per-tweet limit), attached to the
+  // final reply by the pipeline.
+  const mediaUrls: string[] = [];
 
   for (let step = 0; step < config.agentMaxSteps; step++) {
     const raw = await chat(messages, { jsonMode: true, model });
@@ -164,18 +175,19 @@ export async function runAgentLoop(
       log.warn({ id: tweet.id, step, raw }, "agent emitted invalid JSON — asking to retry");
       messages.push({
         role: "user",
-        content: 'Invalid response. Emit exactly one JSON object: {"action":"reply","text":"..."} or {"action":"use_skill","skill":"...","params":{...}}',
+        content: 'Invalid response. Emit exactly one JSON object. The "action" field must be the literal string "use_skill" or "reply" — never a skill name; the skill goes in the "skill" field. Use {"action":"reply","text":"..."} or {"action":"use_skill","skill":"...","params":{...}}',
       });
       continue;
     }
 
     if (parsed.action === "reply") {
       log.info({ id: tweet.id, steps: step + 1 }, "agent produced reply");
-      return { text: parsed.text, deniedSkills };
+      return { text: parsed.text, deniedSkills, mediaUrls };
     }
 
-    const { observation, denied } = await runSkillStep(parsed.skill, parsed.params, tweet, isAdmin, log);
+    const { observation, denied, mediaUrl } = await runSkillStep(parsed.skill, parsed.params, tweet, isAdmin, log);
     if (denied) deniedSkills.push(parsed.skill);
+    if (mediaUrl && mediaUrls.length < 4) mediaUrls.push(mediaUrl); // X allows up to 4 images/tweet
     log.info({ id: tweet.id, step, skill: parsed.skill }, `Observation from "${parsed.skill}"`);
     // The chat API has no "skill"/"tool" role we can use without native tool-calls,
     // so this rides on a "user" message — but we fence it as retrieved skill output
@@ -195,11 +207,11 @@ export async function runAgentLoop(
   try {
     const raw = await chat(messages, { jsonMode: true, model });
     const parsed = parseStep(raw);
-    if (parsed?.action === "reply") return { text: parsed.text, deniedSkills };
+    if (parsed?.action === "reply") return { text: parsed.text, deniedSkills, mediaUrls };
   } catch {
     // fall through to fallback
   }
-  return { text: FALLBACK_REPLY, deniedSkills };
+  return { text: FALLBACK_REPLY, deniedSkills, mediaUrls };
 }
 
 async function runSkillStep(
@@ -208,7 +220,7 @@ async function runSkillStep(
   tweet: Tweet,
   isAdmin: boolean,
   log: Logger,
-): Promise<{ observation: string; denied?: boolean }> {
+): Promise<{ observation: string; denied?: boolean; mediaUrl?: string }> {
   const skill = getSkill(skillName);
 
   if (!skill) {
@@ -237,10 +249,12 @@ async function runSkillStep(
 
   try {
     const result = await skill.handler(params, tweet);
-    if (result.mediaUrl) {
-      log.warn({ id: tweet.id }, "skill returned mediaUrl but media posting is not yet supported");
-    }
-    return { observation: result.text ?? (result.data !== undefined ? JSON.stringify(result.data) : "") };
+    // A skill's mediaUrl rides back to the loop, which collects it for the pipeline to
+    // upload and attach to the reply (the `data`/`text` still becomes the observation).
+    return {
+      observation: result.text ?? (result.data !== undefined ? JSON.stringify(result.data) : ""),
+      mediaUrl: result.mediaUrl,
+    };
   } catch (err) {
     log.error({ err, id: tweet.id, skill: skillName }, "skill handler threw");
     return { observation: `Error running "${skillName}": ${err instanceof Error ? err.message : String(err)}` };

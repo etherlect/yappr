@@ -13,17 +13,15 @@ Extract these parameters:
   for; don't invent detail they didn't request.
 - `size` (optional) — the image orientation, one of:
   - `square` — 1024×1024 (**default** — use this whenever the user doesn't ask for a shape)
-  - `landscape` — 1792×1024 (wide; for "landscape", "wide", "banner", "16:9")
-  - `portrait` — 1024×1792 (tall; for "portrait", "vertical", "tall", "phone wallpaper")
+  - `landscape` — 1536×1024 (wide; for "landscape", "wide", "banner")
+  - `portrait` — 1024×1536 (tall; for "portrait", "vertical", "tall", "phone wallpaper")
 
 The skill returns `image_url: <url>` once the image is ready. Generation runs inline for
 up to ~30s; if it takes longer the skill polls the job in the background, so a call can
 take up to ~1–2 minutes. Wait for it.
 
 When you get the result back:
-- Reply to the asker and include the returned image URL **verbatim** in your reply so
-  they can open it.
-- The image is delivered as a **link, not an inline attachment** — you cannot embed it
-  in the tweet, so the URL itself must appear in the reply text.
+- The generated image is **attached to your reply automatically** — just write a short,
+  natural caption for it. Do **not** paste any URL or link in the reply text.
 - If the skill reports a failure or timeout, tell the user it couldn't generate the
-  image. Never invent or guess an image URL.
+  image. Never invent or describe an image that wasn't actually generated.

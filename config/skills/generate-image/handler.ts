@@ -21,10 +21,12 @@ const MODEL = "openai/gpt-image-1"; // $0.021 / image (1024x1024)
 
 // Orientation keyword → the pixel dimensions sent to the endpoint as `size`. Square is
 // the default when the caller gives no (or an unrecognised) size.
+// gpt-image-1 only accepts these three sizes (1024x1024, 1536x1024, 1024x1536) — the
+// 1792-wide DALL·E 3 sizes are rejected. Update these if you switch MODEL.
 const SIZES: Record<string, string> = {
   square: "1024x1024",
-  landscape: "1792x1024",
-  portrait: "1024x1792",
+  landscape: "1536x1024",
+  portrait: "1024x1536",
 };
 const DEFAULT_SIZE = "square";
 
@@ -52,6 +54,11 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function imageUrl(body: any): string | undefined {
   return body?.data?.[0]?.url;
 }
+
+// Returned as `mediaUrl` on success: the reply pipeline uploads it to X and attaches it
+// to the reply, so the model should caption the image rather than paste a URL.
+const GENERATED_NOTE =
+  "Image generated — it will be attached to your reply automatically. Write a short caption for it and do NOT include any URL in your reply.";
 
 export const handler: SkillHandler = async (params) => {
   const prompt = (params.prompt ?? "").trim();
@@ -83,7 +90,7 @@ export const handler: SkillHandler = async (params) => {
   const inline = imageUrl(body);
   if (inline) {
     log.info({ model: MODEL, size, url: inline }, "generate-image: inline result");
-    return { text: `image_url: ${inline}` };
+    return { text: GENERATED_NOTE, mediaUrl: inline };
   }
 
   // 2b) Slow path — poll the job until it completes. payFetch re-signs the poll's x402
@@ -107,7 +114,7 @@ export const handler: SkillHandler = async (params) => {
       const url = imageUrl(pb);
       if (url) {
         log.info({ attempt, url }, "generate-image: completed");
-        return { text: `image_url: ${url}` };
+        return { text: GENERATED_NOTE, mediaUrl: url };
       }
       if (pb?.status === "failed") {
         log.warn({ attempt, body: pb }, "generate-image: job reported failed");

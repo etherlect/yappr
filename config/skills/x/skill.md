@@ -63,6 +63,7 @@ Publish a new tweet, a reply, or a quote tweet.
 - `text` (required) — the tweet body.
 - `reply_to` (optional) — a tweet ID/URL to reply under.
 - `quote_id` (optional) — a tweet ID/URL to quote.
+- `media_url` (optional) — an image URL to attach (or several, comma-separated, up to 4). Each is uploaded to X automatically and embedded in the post.
 
 ### delete
 Delete one of the agent's own tweets.
@@ -112,6 +113,13 @@ List who a user follows.
 ### follow / unfollow
 Follow or unfollow an account.
 - Provide either `username` or `id`.
+
+### set-profile
+Update the agent's own X profile. Pass only the fields you want to change; omit the rest (an empty string clears a field).
+- `name` (optional) — display name.
+- `bio` (optional) — profile bio/description.
+- `location` (optional) — profile location.
+- `url` (optional) — profile website URL.
 
 ## Other
 
