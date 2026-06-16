@@ -27,6 +27,11 @@ export { log } from "./log.js";
 export { config } from "./config.js";
 export { payFetch, paidUsd, walletAddress } from "./wallet.js";
 
+// ── LLM gateway — for skills that need a sub-inference step of their own (e.g. crafting
+// a prompt before acting). Spend is tracked as inference automatically. ──
+export { chat } from "./llm/index.js";
+export type { ChatMessage, ContentPart } from "./llm/index.js";
+
 // ── Holder gate — the code-side check behind `access: holder` skills, exported
 // so skill handlers can apply finer-grained holding tiers themselves ──
 export { checkHolderAccess } from "./skills/holder-access.js";

@@ -174,7 +174,7 @@ Routing is per-mention to keep costs down: text-only mentions stay on the cheap 
 Each skill is a folder containing a `skill.md` and an optional `handler.ts`:
 
 - `skill.md` frontmatter: `name`, `description`, `access` (`all`, `admin` or `holder`), and for holder skills `min_holding` (whole tokens of the agent's token the asker must hold; omit or `0` to only require a known Bankr wallet). The body tells the LLM how to call the skill and interpret its result.
-- `handler.ts` exports `handler(params, tweet)` returning `{ text }`, `{ data }`, or `{ mediaUrl }`. **Omit it** for a context-only skill — the body becomes always-on guidance injected into the system prompt rather than a callable tool (see `bad-behavior`). Import any engine helpers and types from the **`yappr`** package — never with relative `../../src/...` paths:
+- `handler.ts` exports `handler(params, tweet)` returning `{ text }`, `{ data }`, or `{ mediaUrl }`. **Omit it** for a context-only skill — the body becomes always-on guidance injected into the system prompt rather than a callable tool. Import any engine helpers and types from the **`yappr`** package — never with relative `../../src/...` paths:
 
   ```ts
   // config/skills/my-skill/handler.ts
