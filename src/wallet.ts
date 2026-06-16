@@ -3,7 +3,7 @@ import { log } from "./log.js";
 import { bankrApi, bankrX402Pay, type BankrX402PayResult } from "./bankr.js";
 import { createBankrSigner, createPayFetch } from "./x402.js";
 import { resolveEvmAddress } from "./compute.js";
-import { recordSpend } from "./stats.js";
+import { recordSpend, type SpendType } from "./stats.js";
 import { sleep, envNumber } from "./util.js";
 
 let _walletAddress: `0x${string}` | null = null;
@@ -121,6 +121,15 @@ function gatewayResponse(result: BankrX402PayResult): Response {
   return res;
 }
 
+// Which spend category an x402 call bills to, by host: the compute API
+// (compute.x402layer.cc) and the X data endpoint (x402.twit.sh) keep their own lines;
+// everything else a skill/hook pays for (image gen, other x402 APIs) rolls up under "x402".
+function spendCategory(url: string): SpendType {
+  if (url.includes("compute.x402layer.cc")) return "compute";
+  if (url.includes("twit.sh")) return "x-api";
+  return "x402";
+}
+
 export async function payFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   const url = requestUrl(input);
   const method = (init.method ?? "GET").toUpperCase();
@@ -178,10 +187,11 @@ export async function payFetch(input: RequestInfo | URL, init: RequestInit = {})
   else if (!isMentions) log.info({ url: safeUrl, method, status: res.status }, "x402 payFetch ok");
 
   // Every x402 payment funnels through here, so it's the one place to record spend
-  // into the ledger. Categorise by host: the compute API vs. the X data endpoint.
+  // into the ledger. Categorise by host: the compute API, the X data endpoint, or any
+  // other x402 endpoint a skill/hook calls (image gen, etc.) → the generic "x402".
   // (Inference isn't x402 — it's recorded separately from the credit balance.)
   const paid = paidUsd(res);
-  if (paid != null && paid > 0) recordSpend(url.includes("compute.x402layer.cc") ? "compute" : "x-api", paid);
+  if (paid != null && paid > 0) recordSpend(spendCategory(url), paid);
 
   return res;
 }

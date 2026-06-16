@@ -16,19 +16,19 @@ export type ThemeName = "dark" | "light";
 type Palette = {
   text: string; green: string; yellow: string; red: string; cyan: string;
   accent: string; border: string;
-  chart: { spent: string; earn: string; xapi: string; inference: string; compute: string };
+  chart: { spent: string; earn: string; xapi: string; inference: string; compute: string; x402: string };
 };
 
 const THEMES: Record<ThemeName, Palette> = {
   dark: {
     text: "143;191;255", green: "77;139;255", yellow: "102;163;255", red: "0;82;255",
     cyan: "143;191;255", accent: "51;116;255", border: "0;82;255",
-    chart: { spent: "0;82;255", earn: "143;191;255", xapi: "143;191;255", inference: "77;139;255", compute: "38;99;255" },
+    chart: { spent: "0;82;255", earn: "143;191;255", xapi: "143;191;255", inference: "77;139;255", compute: "38;99;255", x402: "170;120;255" },
   },
   light: {
     text: "30;58;138", green: "0;82;255", yellow: "59;130;246", red: "30;64;175",
     cyan: "37;99;235", accent: "29;78;216", border: "0;82;255",
-    chart: { spent: "30;58;138", earn: "59;130;246", xapi: "59;130;246", inference: "0;82;255", compute: "147;180;255" },
+    chart: { spent: "30;58;138", earn: "59;130;246", xapi: "59;130;246", inference: "0;82;255", compute: "147;180;255", x402: "124;58;237" },
   },
 };
 

@@ -22,7 +22,7 @@ const LINE_CHART_HEIGHT = Math.max(3, envNumber("STATUS_CHART_HEIGHT", 8));
 
 // Expense-category colors as truecolor RGB triples, from the current theme.
 // Shared by the bar chart and its legend.
-export const CAT_RGB = () => ({ xapi: chartRgb().xapi, inference: chartRgb().inference, compute: chartRgb().compute });
+export const CAT_RGB = () => ({ xapi: chartRgb().xapi, inference: chartRgb().inference, compute: chartRgb().compute, x402: chartRgb().x402 });
 export const catColor = (rgb: string) => (s: string) => `\x1b[38;2;${rgb}m${s}\x1b[0m`;
 
 export type ChartSeries = { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number };
@@ -187,21 +187,22 @@ function renderStackedBars(cols: number, startMs: number, layers: Array<{ values
   return lines;
 }
 
-// Per-hour spend stacked by type: x-api / inference / compute, bottom-up.
-export function renderHourlyBars(cols: number, byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[] }): string[] {
+// Per-hour spend stacked by type: x-api / inference / compute / x402, bottom-up.
+export function renderHourlyBars(cols: number, byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; x402: number[] }): string[] {
   const cat = CAT_RGB();
   return renderStackedBars(cols, byType.startMs, [
     { values: byType.xapi, rgb: cat.xapi },
     { values: byType.inference, rgb: cat.inference },
     { values: byType.compute, rgb: cat.compute },
+    { values: byType.x402, rgb: cat.x402 },
   ]);
 }
 
 // Per-hour spent (red, bottom) vs earned (cyan, stacked on top), both in USD —
 // earned is the WETH series converted at the live ETH price.
-export function renderHourlySpentEarned(cols: number, d: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; earned: number[] }, ethUsd: number | null): string[] {
+export function renderHourlySpentEarned(cols: number, d: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; x402: number[]; earned: number[] }, ethUsd: number | null): string[] {
   const N = 24;
-  const spent = Array.from({ length: N }, (_, i) => (d.xapi[i] ?? 0) + (d.inference[i] ?? 0) + (d.compute[i] ?? 0));
+  const spent = Array.from({ length: N }, (_, i) => (d.xapi[i] ?? 0) + (d.inference[i] ?? 0) + (d.compute[i] ?? 0) + (d.x402[i] ?? 0));
   const earned = Array.from({ length: N }, (_, i) => (d.earned[i] ?? 0) * (ethUsd ?? 0));
   return renderStackedBars(cols, d.startMs, [
     { values: spent, rgb: SPENT_RGB() },

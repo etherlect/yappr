@@ -170,7 +170,7 @@ async function fetchLlmCredits(): Promise<number | null> {
 // All-time activity + spend, queried from the agent's SQLite stats DB via the CLI
 // (the agent is the always-on writer, so this counts everything — including events
 // that happened while the dashboard was closed). Spend already includes x-api,
-// compute and inference; earnings come back as WETH — no client-side aggregation.
+// compute, inference and x402; earnings come back as WETH — no client-side aggregation.
 async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
   const res = await ssh.execCommand(STATS_QUERY_CMD, { cwd: "/" }).catch(() => null);
   if (!res?.stdout) return null;
@@ -195,6 +195,7 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
         "x-api": Number(s.spentByType?.["x-api"]) || 0,
         inference: Number(s.spentByType?.inference) || 0,
         compute: Number(s.spentByType?.compute) || 0,
+        x402: Number(s.spentByType?.x402) || 0,
       },
       chart: {
         day: cs(s.chart?.day),
@@ -203,6 +204,7 @@ async function fetchAgentStats(ssh: NodeSSH): Promise<Stats | null> {
           xapi: numArr(s.chart?.byType?.xapi),
           inference: numArr(s.chart?.byType?.inference),
           compute: numArr(s.chart?.byType?.compute),
+          x402: numArr(s.chart?.byType?.x402),
           earned: numArr(s.chart?.byType?.earned),
         },
       },
@@ -241,7 +243,7 @@ async function fetchCronJobs(ssh: NodeSSH): Promise<CronJobInfo[] | null> {
 
 // ─── parsing ──────────────────────────────────────────────────────────────────
 
-type Stats = { mentions: number; replies: number; llmTurns: number; spentUsd: number; warns: number; errors: number; earnedWeth: number; devWeth: number; spentUsdWindow: number; inferenceUsdWindow: number; earnedWethWindow: number; rateWindowHours: number; spentByType: { "x-api": number; inference: number; compute: number }; chart: { day: ChartSeries; byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; earned: number[] } } };
+type Stats = { mentions: number; replies: number; llmTurns: number; spentUsd: number; warns: number; errors: number; earnedWeth: number; devWeth: number; spentUsdWindow: number; inferenceUsdWindow: number; earnedWethWindow: number; rateWindowHours: number; spentByType: { "x-api": number; inference: number; compute: number; x402: number }; chart: { day: ChartSeries; byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; x402: number[]; earned: number[] } } };
 type Pm2 = { status: string; bootMs: number; restarts: number; mem: number; cpu: number };
 // One cron_jobs row as shipped by `stats-cli cron` (schedule pre-rendered to prose).
 type CronJobInfo = {
@@ -511,7 +513,7 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   const nextTreasury = p?.bootMs ? TREASURY_INTERVAL_MS - (elapsed % TREASURY_INTERVAL_MS) : 0;
   const wallet = state.wallet ? `${state.wallet.slice(0, 6)}..${state.wallet.slice(-4)}` : (process.env.BANKR_API_KEY ? dim("resolving") : dim("-"));
 
-  // Two separate fuel tanks: USDC pays x-api + compute, LLM credits pay inference. (We
+  // Two separate fuel tanks: USDC pays x-api + compute + x402, LLM credits pay inference. (We
   // exclude the agent's own token; we don't assume it stays liquid.) Burn rates: once
   // there's ≥ RUNWAY_MIN_DATA_HOURS of recorded activity, measure each from the trailing
   // window (which grows up to 24h); before that, predict the USDC burn from the poll
@@ -693,7 +695,7 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   // The hourly views need a real signal, not just a fetched series: byType.startMs
   // is always set once the summary arrives, so gate on any nonzero bucket instead.
   const hasHourly = s.chart.byType.startMs > 0 &&
-    [s.chart.byType.xapi, s.chart.byType.inference, s.chart.byType.compute, s.chart.byType.earned]
+    [s.chart.byType.xapi, s.chart.byType.inference, s.chart.byType.compute, s.chart.byType.x402, s.chart.byType.earned]
       .some((a) => a.some((v) => v > 0));
   let chartTitle: string;
   let chartLines: string[];
@@ -701,7 +703,7 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
     chartTitle = `HOURLY SPENT vs EARNED  ${dim("· 24h ·")} ${catColor(SPENT_RGB())("spent")} ${dim("/")} ${catColor(EARN_RGB())("earned")}  ${nav}`;
     chartLines = hasHourly ? renderHourlySpentEarned(cols, s.chart.byType, b?.ethUsd ?? null) : placeholder;
   } else if (ci === 2) {
-    chartTitle = `HOURLY EXPENSES  ${dim("· 24h ·")} ${catColor(CAT_RGB().xapi)("x-api")} ${dim("/")} ${catColor(CAT_RGB().inference)("inference")} ${dim("/")} ${catColor(CAT_RGB().compute)("compute")}  ${nav}`;
+    chartTitle = `HOURLY EXPENSES  ${dim("· 24h ·")} ${catColor(CAT_RGB().xapi)("x-api")} ${dim("/")} ${catColor(CAT_RGB().inference)("inference")} ${dim("/")} ${catColor(CAT_RGB().compute)("compute")} ${dim("/")} ${catColor(CAT_RGB().x402)("x402")}  ${nav}`;
     chartLines = hasHourly ? renderHourlyBars(cols, s.chart.byType) : placeholder;
   } else {
     chartTitle = `SPENT vs EARNED  ${dim("· 24h ·")} ${catColor(SPENT_RGB())("spent")} ${dim("/")} ${catColor(EARN_RGB())("earned")}  ${nav}`;
@@ -772,7 +774,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
   const interactive = !!process.stdout.isTTY;
   const state: State = {
     ip: target.ip, handle, admins: admins || dim("none"), wallet: null,
-    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, devWeth: 0, spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0, spentByType: { "x-api": 0, inference: 0, compute: 0 }, chart: { day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 }, byType: { startMs: 0, xapi: [], inference: [], compute: [], earned: [] } } },
+    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, devWeth: 0, spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0, spentByType: { "x-api": 0, inference: 0, compute: 0, x402: 0 }, chart: { day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 }, byType: { startMs: 0, xapi: [], inference: [], compute: [], x402: [], earned: [] } } },
     logs: [], pm2: null, specs: null, balances: null, computeHours: null,
     creditUsd: null,
     sysCpu: null, sysMemMb: null, sysDiskUsed: null, scroll: 0, logRows: 0, confirm: null,
@@ -1066,8 +1068,8 @@ function demo() {
   const state: State = {
     ip: "203.0.113.7", handle: "evvrbot", admins: "@alice, @bob", wallet: "0xA1b2C3d4E5f6A7b8C9d0E1f2A3b4C5d6E7f80910",
     stats: { mentions: 37, replies: 29, llmTurns: 84, spentUsd: 0.7345, warns: 1, errors: 0, earnedWeth: 0.0512, devWeth: 0.0123, spentUsdWindow: 96, inferenceUsdWindow: 1.2, earnedWethWindow: 0.004, rateWindowHours: 24,
-      spentByType: { "x-api": 0.55, inference: 0.06, compute: 0.12 },
-      chart: (() => { const sp: number[] = [], ew: number[] = []; let a = 0, b2 = 0; for (let i = 0; i < 60; i++) { a += 0.012; b2 += i > 15 ? 0.0009 : 0; sp.push(a); ew.push(b2); } const day = { spendUsd: sp, earnedWeth: ew, startMs: Date.now() - 5 * 3_600_000, endMs: Date.now() }; const x: number[] = [], inf: number[] = [], c: number[] = [], ea: number[] = []; for (let i = 0; i < 24; i++) { x.push(i >= 12 ? 0.02 + (i % 3) * 0.005 : 0); inf.push(i >= 12 ? 0.003 : 0); c.push(i === 18 ? 0.06 : 0); ea.push(i >= 14 ? 0.000005 + (i % 4) * 0.000002 : 0); } const byType = { startMs: Date.now() - 23 * 3_600_000, xapi: x, inference: inf, compute: c, earned: ea }; return { day, byType }; })() },
+      spentByType: { "x-api": 0.55, inference: 0.06, compute: 0.12, x402: 0.08 },
+      chart: (() => { const sp: number[] = [], ew: number[] = []; let a = 0, b2 = 0; for (let i = 0; i < 60; i++) { a += 0.012; b2 += i > 15 ? 0.0009 : 0; sp.push(a); ew.push(b2); } const day = { spendUsd: sp, earnedWeth: ew, startMs: Date.now() - 5 * 3_600_000, endMs: Date.now() }; const x: number[] = [], inf: number[] = [], c: number[] = [], x4: number[] = [], ea: number[] = []; for (let i = 0; i < 24; i++) { x.push(i >= 12 ? 0.02 + (i % 3) * 0.005 : 0); inf.push(i >= 12 ? 0.003 : 0); c.push(i === 18 ? 0.06 : 0); x4.push(i >= 16 ? 0.021 + (i % 2) * 0.032 : 0); ea.push(i >= 14 ? 0.000005 + (i % 4) * 0.000002 : 0); } const byType = { startMs: Date.now() - 23 * 3_600_000, xapi: x, inference: inf, compute: c, x402: x4, earned: ea }; return { day, byType }; })() },
     pm2: { status: "online", bootMs: Date.now() - 8_120_000, restarts: 2, mem: 149 * 1024 * 1024, cpu: 3 },
     specs: { cpu: "2", ram: "1.9Gi", disk: "25G", os: "Ubuntu 24.04.1 LTS" },
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, burned: 2_450_000n * 10n ** 18n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
@@ -1096,7 +1098,7 @@ function check(cols = 143, rows = 40) {
   const long = String.raw`[2026-06-08 15:21:32] INFO: x-api GET /tweets/mentions {"path":"/tweets/mentions","params":{"auth_token":"[redacted]","ct0":"[redacted]"}}`;
   const state: State = {
     ip: "95.179.144.82", handle: "evvrbot", admins: "@alexben0006", wallet: "0xe6440ce076a5b491e7d6378223517d60a96b1326",
-    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, devWeth: 0, spentUsdWindow: 12, inferenceUsdWindow: 1, earnedWethWindow: 0.001, rateWindowHours: 24, spentByType: { "x-api": 8, inference: 1, compute: 3 }, chart: { day: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.2), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.00005), startMs: Date.now() - 24 * 3_600_000, endMs: Date.now() }, byType: { startMs: Date.now() - 23 * 3_600_000, xapi: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.02 : 0), inference: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.003 : 0), compute: Array.from({ length: 24 }, (_, i) => i === 16 ? 0.05 : 0), earned: Array.from({ length: 24 }, (_, i) => i >= 14 ? 0.000006 : 0) } } },
+    stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, devWeth: 0, spentUsdWindow: 12, inferenceUsdWindow: 1, earnedWethWindow: 0.001, rateWindowHours: 24, spentByType: { "x-api": 8, inference: 1, compute: 3, x402: 2 }, chart: { day: { spendUsd: Array.from({ length: 60 }, (_, i) => i * 0.2), earnedWeth: Array.from({ length: 60 }, (_, i) => i * 0.00005), startMs: Date.now() - 24 * 3_600_000, endMs: Date.now() }, byType: { startMs: Date.now() - 23 * 3_600_000, xapi: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.02 : 0), inference: Array.from({ length: 24 }, (_, i) => i >= 10 ? 0.003 : 0), compute: Array.from({ length: 24 }, (_, i) => i === 16 ? 0.05 : 0), x402: Array.from({ length: 24 }, (_, i) => i >= 16 ? 0.021 : 0), earned: Array.from({ length: 24 }, (_, i) => i >= 14 ? 0.000006 : 0) } } },
     pm2: { status: "online", bootMs: Date.now() - 945_000, restarts: 1, mem: 110 * 1024 * 1024, cpu: 0.4 },
     specs: { cpu: "1", ram: "951Mi", disk: "23G", os: "Ubuntu 22.04.5 LTS" }, scroll: 0, logRows: 0,
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, burned: 2_450_000n * 10n ** 18n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },

@@ -13,7 +13,7 @@ import { withSchema } from "./db.js";
 //
 // All writes are best-effort: stats must never throw into the agent's hot paths.
 
-export type SpendType = "x-api" | "compute" | "inference";
+export type SpendType = "x-api" | "compute" | "inference" | "x402";
 
 export type Summary = {
   mentions: number;
@@ -46,7 +46,7 @@ export type Summary = {
     day: { spendUsd: number[]; earnedWeth: number[]; startMs: number; endMs: number };
     // Per-hour spend by type over the last 24h (24 buckets, clock-aligned, NOT cumulative)
     // for the stacked bar chart. startMs is the first bucket's (clock-hour) start.
-    byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; earned: number[] };
+    byType: { startMs: number; xapi: number[]; inference: number[]; compute: number[]; x402: number[]; earned: number[] };
   };
 };
 
@@ -183,10 +183,11 @@ function buildSeries(d: Conn, startMs: number, endMs: number): ChartSeries {
 // Per-hour spend by type AND per-hour earnings over the 24 clock-hours ending with the
 // current hour. Returns 24 buckets each (spend USD by type; earned WETH), not cumulative,
 // plus the first bucket's (clock-aligned) start. For the hourly bar charts. Bucketed in SQL.
-function buildHourlyByType(d: Conn): { startMs: number; xapi: number[]; inference: number[]; compute: number[]; earned: number[] } {
+function buildHourlyByType(d: Conn): { startMs: number; xapi: number[]; inference: number[]; compute: number[]; x402: number[]; earned: number[] } {
   const N = 24, HOUR = 3_600_000;
   const startMs = Math.floor(Date.now() / HOUR) * HOUR - (N - 1) * HOUR; // 24 hours ending this hour
   const xapi = new Array<number>(N).fill(0), inference = new Array<number>(N).fill(0), compute = new Array<number>(N).fill(0);
+  const x402 = new Array<number>(N).fill(0);
   const earned = new Array<number>(N).fill(0);
   const startSec = startMs / 1000;
   const startIso = new Date(startMs).toISOString(), endIso = new Date(startMs + N * HOUR).toISOString();
@@ -201,6 +202,7 @@ function buildHourlyByType(d: Conn): { startMs: number; xapi: number[]; inferenc
     if (r.type === "x-api") xapi[r.b] += r.u || 0;
     else if (r.type === "inference") inference[r.b] += r.u || 0;
     else if (r.type === "compute") compute[r.b] += r.u || 0;
+    else if (r.type === "x402") x402[r.b] += r.u || 0;
   }
   const erows = d.prepare(`
     SELECT CAST((unixepoch(ts) - ?) / 3600 AS INTEGER) AS b, COALESCE(SUM(weth), 0) AS w
@@ -209,7 +211,7 @@ function buildHourlyByType(d: Conn): { startMs: number; xapi: number[]; inferenc
     GROUP BY b
   `).all(startSec, startIso, endIso) as Array<{ b: number; w: number }>;
   for (const r of erows) if (r.b >= 0 && r.b < N) earned[r.b] += r.w || 0;
-  return { startMs, xapi, inference, compute, earned };
+  return { startMs, xapi, inference, compute, x402, earned };
 }
 
 // All-time rolled-up totals, computed straight from the events table. Cheap with the
@@ -217,11 +219,11 @@ function buildHourlyByType(d: Conn): { startMs: number; xapi: number[]; inferenc
 export function summary(): Summary {
   const empty: Summary = {
     mentions: 0, replies: 0, llm: 0, warns: 0, errors: 0,
-    spentUsd: 0, spentByType: { "x-api": 0, compute: 0, inference: 0 }, earnedWeth: 0, devWeth: 0,
+    spentUsd: 0, spentByType: { "x-api": 0, compute: 0, inference: 0, x402: 0 }, earnedWeth: 0, devWeth: 0,
     spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0,
     chart: {
       day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 },
-      byType: { startMs: 0, xapi: [], inference: [], compute: [], earned: [] },
+      byType: { startMs: 0, xapi: [], inference: [], compute: [], x402: [], earned: [] },
     },
   };
   const d = conn();
@@ -238,7 +240,7 @@ export function summary(): Summary {
         COALESCE(SUM(weth) FILTER (WHERE kind = 'dev'),   0)   AS devWeth
       FROM events
     `).get() as Record<string, number>;
-    const spentByType: Record<SpendType, number> = { "x-api": 0, compute: 0, inference: 0 };
+    const spentByType: Record<SpendType, number> = { "x-api": 0, compute: 0, inference: 0, x402: 0 };
     const rows = d.prepare("SELECT type, COALESCE(SUM(usdc), 0) AS u FROM events WHERE kind = 'spend' GROUP BY type").all() as Array<{ type: SpendType | null; u: number }>;
     for (const r of rows) if (r.type && r.type in spentByType) spentByType[r.type] = r.u;
 
