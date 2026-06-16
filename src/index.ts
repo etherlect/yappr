@@ -28,9 +28,15 @@ export { config } from "./config.js";
 export { payFetch, paidUsd, walletAddress } from "./wallet.js";
 
 // ── LLM gateway — for skills that need a sub-inference step of their own (e.g. crafting
-// a prompt before acting). Spend is tracked as inference automatically. ──
-export { chat } from "./llm/index.js";
+// a prompt before acting). Spend is tracked as inference automatically. llmCreditBalance
+// reads the remaining inference budget (used by the stats skill's runway). ──
+export { chat, llmCreditBalance } from "./llm/index.js";
 export type { ChatMessage, ContentPart } from "./llm/index.js";
+
+// ── Stats — read the agent's ledger: lifetime counters, spend by type, earnings, and
+// the trailing-window burn figures behind a runway estimate ──
+export { summary } from "./stats.js";
+export type { Summary, SpendType } from "./stats.js";
 
 // ── Holder gate — the code-side check behind `access: holder` skills, exported
 // so skill handlers can apply finer-grained holding tiers themselves ──

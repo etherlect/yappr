@@ -120,6 +120,26 @@ export async function loadModelPricing(): Promise<void> {
   }));
 }
 
+// Current LLM credit balance in USD at the Bankr gateway — the inference budget the agent
+// draws down on every request. 402 means "no credits" → 0; any other failure → null
+// (unknown). Used by the stats skill to size the inference tank for its runway estimate.
+export async function llmCreditBalance(): Promise<number | null> {
+  const key = process.env.BANKR_LLM_KEY || config.bankrApiKey;
+  if (!key) return null;
+  try {
+    const res = await fetch(`${LLM_URL}/v1/credits`, {
+      headers: { "X-API-Key": key, "User-Agent": "yappr/0.1" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.status === 402) return 0;
+    if (!res.ok) return null;
+    const body = (await res.json()) as { balanceUsd?: number };
+    return Number(body.balanceUsd ?? 0);
+  } catch {
+    return null;
+  }
+}
+
 export function setPrompts(prompts: Prompts): void {
   _prompts = prompts;
 }

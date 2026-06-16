@@ -104,11 +104,15 @@ const actions: Record<string, Action> = {
     return { text: `unfollowed ${p.username ?? p.id}` };
   },
   "set-profile": async (p) => {
-    const fields = { name: p.name, bio: p.bio, location: p.location, url: p.url };
-    if (Object.values(fields).every((v) => v === undefined)) {
-      return { text: "missing at least one profile field (name, bio, location, url)" };
+    // All four fields are required (a profile set replaces the whole thing). `name` must
+    // be non-empty; bio/location/url may be an empty string, which CLEARS that field on X.
+    for (const f of ["name", "bio", "location", "url"] as const) {
+      if (p[f] === undefined) {
+        return { text: "set-profile requires all of: name, bio, location, url (pass an empty string for bio/location/url to clear them)" };
+      }
     }
-    await setProfile(fields);
+    if (p.name.trim() === "") return { text: "name cannot be empty" };
+    await setProfile({ name: p.name, bio: p.bio, location: p.location, url: p.url });
     return { text: "profile updated" };
   },
 

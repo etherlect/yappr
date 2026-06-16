@@ -115,11 +115,11 @@ Follow or unfollow an account.
 - Provide either `username` or `id`.
 
 ### set-profile
-Update the agent's own X profile. Pass only the fields you want to change; omit the rest (an empty string clears a field).
-- `name` (optional) — display name.
-- `bio` (optional) — profile bio/description.
-- `location` (optional) — profile location.
-- `url` (optional) — profile website URL.
+Update the agent's own X profile. **All four fields are required** — a profile update replaces the whole profile, so always include every field, even ones you're keeping the same (carry over the current value).
+- `name` (required) — display name. **Cannot be empty.**
+- `bio` (required) — profile bio/description. Pass an empty string `""` to clear it.
+- `location` (required) — profile location. Pass an empty string `""` to clear it.
+- `url` (required) — profile website URL. Pass an empty string `""` to clear it.
 
 ## Other
 
