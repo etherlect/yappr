@@ -257,13 +257,38 @@ function formatUsd(amount: number, decimals: number): string {
   return `$${amount.toFixed(decimals)}`;
 }
 
+// Atomic USDC (6-dp) authorized by an x402 payment, read from the X-PAYMENT header the
+// client attaches to its (paid) retry — so deploy can report what a compute payment cost.
+function paymentAtomicFromHeaders(headers: Headers): bigint | undefined {
+  const raw = headers.get("x-payment") ?? headers.get("payment-signature");
+  if (!raw) return undefined;
+  try {
+    const decoded = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
+    const value = decoded?.payload?.authorization?.value;
+    return value != null ? BigInt(value) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function computeX402Pay<T = unknown>(
   apiKey: string,
   walletAddress: `0x${string}`,
   url: string,
   body: string,
+  onPaid?: (usd: number) => void,
 ): Promise<T> {
-  const payFetch = createPayFetch(createBankrSigner(apiKey, walletAddress));
+  let paidAtomic: bigint | undefined;
+  // Trace the underlying fetch to capture the paid amount from the X-PAYMENT header the
+  // x402 client sends on its (paid) retry — createPayFetch doesn't surface it otherwise.
+  const tracingFetch: typeof fetch = async (input, init) => {
+    const res = await fetch(input, init);
+    const headers = input instanceof Request ? input.headers : new Headers(init?.headers as HeadersInit | undefined);
+    const atomic = paymentAtomicFromHeaders(headers);
+    if (atomic != null) paidAtomic = atomic;
+    return res;
+  };
+  const payFetch = createPayFetch(createBankrSigner(apiKey, walletAddress), tracingFetch);
 
   const res = await payFetch(url, {
     method: "POST",
@@ -276,15 +301,17 @@ async function computeX402Pay<T = unknown>(
   try { parsed = JSON.parse(text); } catch { parsed = text; }
 
   if (!res.ok) throw new Error(`Compute payment failed: ${res.status} ${JSON.stringify(parsed)}`);
+  if (paidAtomic != null && onPaid) onPaid(Number(paidAtomic) / 1e6);
   return parsed as T;
 }
 
-async function extendComputeInstance(apiKey: string, walletAddress: `0x${string}`, instanceId: string): Promise<any> {
+async function extendComputeInstance(apiKey: string, walletAddress: `0x${string}`, instanceId: string, onPaid?: (usd: number) => void): Promise<any> {
   return computeX402Pay<any>(
     apiKey,
     walletAddress,
     `https://compute.x402layer.cc/compute/instances/${instanceId}/extend`,
     JSON.stringify({ extend_hours: 24, network: "base" }),
+    onPaid,
   );
 }
 
@@ -717,6 +744,10 @@ async function main() {
   // provision. When reusing an existing instance (COMPUTE_INSTANCE_ID set),
   // compute is already prepaid — don't gate on it.
   const reusingCompute = !isUnset(process.env.COMPUTE_INSTANCE_ID);
+  // Captured from the x402 compute payment (extend or provision) so it can be recorded
+  // into the server's stats DB after install — deploy pays out-of-band from the agent's
+  // payFetch, so this is the only path that books that compute spend onto the ledger.
+  let computeSpendUsd: number | undefined;
 
   if (!reusingCompute && usdcBalance < requiredBalance) {
     warn(`Insufficient balance: ${usdcBalance.toFixed(2)} USDC. You need at least ${requiredBalance} USDC to deploy:`);
@@ -900,7 +931,7 @@ async function main() {
       // ── Step 5: extend compute ────────────────────────────────────────────
       step(5, TOTAL_STEPS, "Extending compute");
       try {
-        await spin("Paying for +24h via x402…", () => extendComputeInstance(bankrApiKey, address as `0x${string}`, instanceId), "Compute extended by 24h");
+        await spin("Paying for +24h via x402…", () => extendComputeInstance(bankrApiKey, address as `0x${string}`, instanceId, (usd) => { computeSpendUsd = usd; }), "Compute extended by 24h");
         instance = await fetchComputeInstance(bankrApiKey, address as `0x${string}`, instanceId);
         ip = computeInstanceIp(instance) ?? ip;
       } catch (err) {
@@ -1038,6 +1069,7 @@ async function main() {
         address as `0x${string}`,
         "https://compute.x402layer.cc/compute/provision",
         provisionBody,
+        (usd) => { computeSpendUsd = usd; },
       ),
       "Compute paid & provisioning started",
     );
@@ -1178,6 +1210,21 @@ async function main() {
       }, "Database restored from backup");
     } else {
       info("Starting with a fresh database");
+    }
+  }
+
+  // Book the deploy-time compute payment into the server's stats DB so its cost shows up
+  // in spend totals, the runway burn and the expense charts. Deploy pays for compute
+  // locally (computeX402Pay, outside the agent's payFetch), so this SSH-side write is the
+  // only thing that records it. The engine is installed and the DB is final by now, and
+  // stats-cli run from /yappr resolves DB_PATH to the same DB the agent uses. Best-effort:
+  // a stats write must never fail the deploy.
+  if (computeSpendUsd && computeSpendUsd > 0) {
+    try {
+      await sshExec(ssh, `cd /yappr && node node_modules/yappr/dist/src/stats-cli.js record-spend compute ${computeSpendUsd.toFixed(6)}`, { quiet: true });
+      ok(`Recorded compute spend ($${computeSpendUsd.toFixed(4)}) to stats`);
+    } catch (err) {
+      warn(`Could not record compute spend to stats: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
