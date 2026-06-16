@@ -190,6 +190,43 @@ The agent loop calls handler skills as tools, one per turn, seeing each result b
 
 Copy one of the starter skills (e.g. `config/skills/x/`) to start, or add a new folder. `access: admin` skills are only invocable by handles in `ADMIN_HANDLES`, enforced in code regardless of the LLM's decision. Set `AGENT_MAX_STEPS` (default `6`) to control how many skill calls the loop may make before forcing a reply.
 
+### Calling the LLM from a skill
+
+A skill that needs its own reasoning step — classify, summarise, or craft a prompt before it acts — can call the LLM gateway directly with `chat(messages, opts?)`. It returns the model's reply as a string, and the cost is recorded as inference spend automatically (the same ledger the agent loop draws on).
+
+```ts
+// config/skills/summarise/handler.ts
+import { chat, type ChatMessage, type SkillHandler } from "yappr";
+
+export const handler: SkillHandler = async (params) => {
+  const messages: ChatMessage[] = [
+    { role: "system", content: "You write one punchy sentence." },
+    { role: "user", content: params.text ?? "" },
+  ];
+  return { text: await chat(messages) };
+};
+```
+
+`messages` is the usual `{ role: "system" | "user" | "assistant"; content }[]`. Options: `model` picks a specific gateway model (defaults to `LLM_MODEL`; pass `VISION_MODEL` for an image-capable one), and `jsonMode: true` asks the gateway for a strict JSON object. The built-in `generate-meme-prompt` skill uses this to turn a tweet into a funny image prompt before handing it to `generate-image`.
+
+### Reading the agent's stats
+
+`summary()` returns the agent's ledger — lifetime counters (mentions, replies, LLM calls), spend (`spentUsd` plus `spentByType`: `x-api` / `inference` / `compute` / `x402`), earnings (`earnedWeth`, `devWeth`), and the trailing-window burn figures behind the runway estimate. `llmCreditBalance()` reads the remaining inference budget in USD (`null` if unavailable). It's a synchronous read of the same SQLite DB the agent writes, so it's cheap to call:
+
+```ts
+// config/skills/stats/handler.ts (abridged)
+import { summary, llmCreditBalance, getTreasury, type SkillHandler } from "yappr";
+
+export const handler: SkillHandler = async () => {
+  const s = summary();
+  const credits = await llmCreditBalance();                 // USD, or null
+  const usdc = Number((await getTreasury().balances()).usdc) / 1e6;
+  return { data: { mentions: s.mentions, replies: s.replies, spentUsd: s.spentUsd, credits, usdc } };
+};
+```
+
+The bundled `stats` skill builds on this — pairing `summary()`'s window burn rates with the live USDC balance and `llmCreditBalance()` to report a runway estimate. Import the `Summary` and `SpendType` types from `yappr` if you want to annotate the shape.
+
 ### Gating a skill behind your token
 
 Set `access: holder` plus `min_holding` in a skill's `skill.md` to require the asker to hold the agent's own token — a built-in way to make holding worthwhile (premium support, alpha, perks, paid data, …):
