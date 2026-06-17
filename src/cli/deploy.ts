@@ -569,7 +569,7 @@ async function main() {
     try {
       res = await spin(
         `Launching $${tokenSymbol} on Bankr…`,
-        () => deployTokenLaunch(bankrApiKey, {
+        () => deployTokenLaunch({
           tokenName,
           tokenSymbol,
           feeRecipient: { type: "x", value: handle },
@@ -580,8 +580,9 @@ async function main() {
         "Token launched",
       );
     } catch (err) {
-      // Show Bankr's reason verbatim (e.g. the Club-only 403), then fall back to
-      // the manual address prompt so a Club-less operator can paste an existing CA.
+      // Launches go through the shared Club launch key, so a Club 403 shouldn't
+      // happen here; on any other launch failure show Bankr's reason verbatim, then
+      // fall back to the manual address prompt so the operator can paste an existing CA.
       fail(bankrErrorText(err));
       await promptForExistingToken();
       return;

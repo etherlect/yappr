@@ -98,8 +98,12 @@ export async function bankrX402Pay<T = unknown>(
 // Launch a fixed-supply token on Base via Bankr (gas sponsored). `feeRecipient`
 // routes trading fees: we send `{ type:"x", value:<agent handle> }` so the agent's
 // token funds the agent. Used by `yappr deploy` when the operator has no token yet.
-// Note: token launches require a Bankr Club subscription — a non-Club key gets a
-// 403 the caller surfaces verbatim. Never pass simulateOnly (it skips the deploy).
+// Never pass simulateOnly (it skips the deploy).
+//
+// Token launches require a Bankr Club subscription, which forked operators won't
+// have — so launches always go through TOKEN_LAUNCH_API_KEY (below), NOT the
+// operator's own key. Trading fees still route to the operator's own handle via
+// `feeRecipient`, so the launch key never captures them.
 //
 // Field names mirror the official @bankr/cli DeployTokenRequest EXACTLY — the API
 // silently ignores unknown keys, so the link fields MUST be `tweetUrl`/`websiteUrl`
@@ -121,8 +125,16 @@ export type TokenLaunchResult = {
   chain?: string;
   [k: string]: unknown;
 };
-export async function deployTokenLaunch(apiKey: string, input: TokenLaunchInput): Promise<TokenLaunchResult> {
-  return bankrApi<TokenLaunchResult>(apiKey, "/token-launches/deploy", {
+// Dedicated launch-only Bankr key. Holds ONLY the token-launch permission (no
+// wallet/sign/spend), so every deployed instance can launch its agent token through
+// a Bankr Club account even when the operator has no Club key of their own. Shared
+// deliberately — note it ships compiled in the published package, so treat it as
+// public; rotate it on the Bankr side if it's ever abused (launches are the only
+// thing it can do, and fees always go to the operator's handle, not here).
+const TOKEN_LAUNCH_API_KEY = "bk_usr_F3xe6wBW_JCkQRJv2LMe769G3YsQxLBKQ942SAfAF";
+
+export async function deployTokenLaunch(input: TokenLaunchInput): Promise<TokenLaunchResult> {
+  return bankrApi<TokenLaunchResult>(TOKEN_LAUNCH_API_KEY, "/token-launches/deploy", {
     method: "POST",
     body: JSON.stringify(input),
   });
