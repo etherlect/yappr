@@ -3,19 +3,19 @@
 A self-sustaining X/Twitter reply agent you install as an npm package and extend with your own skills, prompts, and hooks — you never touch the engine itself. It pays for every external call (X data, LLM inference, compute) from a Bankr wallet funded by its own token's trading fees. No private key is ever stored — all signing goes through the Bankr Wallet API.
 
 ```
-                  ┌─────────────────────────────────┐
-                  │              yappr              │
-                  │                                 │
-  X mentions ────►│  poller → pipeline → reply      │──► X replies
-                  │     (payFetch per call)         │
-                  │                                 │
-                  │  treasury (hourly)              │
-                  │   claim → burn → swap           │
-                  │   → extendCompute               │
-                  └──────────┬──────────────────────┘
-                             │
-                   Bankr wallet (USDC on Base)
-                    ▲ funded by token fees
+  +---------------------------+          +---------------------------+
+  | (1) Tag it on X           |          | (2) It replies            |
+  |     yappr sees it and     |--------->|     it pays per call to   |
+  |     starts thinking       |          |     think + post via x402 |
+  +---------------------------+          +---------------------------+
+                ^                                      |
+                |             SELF-FUNDING             |
+                |                (loop)                v
+  +---------------------------+          +---------------------------+
+  | (4) It refuels            |          | (3) $YAPPR trades         |
+  |     fees swapped to USDC, |<---------|     attention and utility |
+  |     keeps it alive        |          |     drive volume          |
+  +---------------------------+          +---------------------------+
 ```
 
 ## What you can build
@@ -39,12 +39,17 @@ Each of these is a folder in `config/skills/` plus a few [context files](#contex
 
 ## Before you run `yappr deploy`
 
-Set these up on Bankr first (in order):
+Set your agent up on X and Bankr first:
 
-1. **Log in at [bankr.bot](https://bankr.bot) with the agent's X/Twitter account** — the account that will own the token and receive its trading fees.
-2. **Generate an API key** — non-read-only, "Wallet & Agent API" enabled, no recipient restrictions (this becomes `BANKR_API_KEY`; details under [Bankr API key setup](#bankr-api-key-setup)).
-3. **Buy a Bankr Club subscription (~$20/month)** — *required only if you want deploy to launch the agent's token for you.* Without it, `yappr deploy`'s inline launch returns `403 Token launches are available to Bankr Club members only` and you must launch a token elsewhere and paste its address instead.
-4. **Fund the Bankr wallet** with USDC on Base. A first-time deploy needs **≥ $20** — the $5 LLM credit seed, ~$1 for the first compute day, and ~$14 for the first day of X-API usage. (If your LLM credits are already ≥ $1 the requirement drops to ~$15; redeploys that reuse an existing instance aren't gated.) The agent self-funds from trading fees after that.
+1. **Create an X account** for your agent — it posts from this account and owns the token.
+2. **Buy X Premium** (under $5/month) so your agent can post long replies instead of being truncated.
+3. **Label the account as automated** at [x.com/settings/account/automation](https://x.com/settings/account/automation) to comply with X's rules — it adds an "Automated by @you" label.
+4. **Log in with X at [bankr.bot/terminal](https://bankr.bot/terminal)**, then add an email at [bankr.bot/terminal/account](https://bankr.bot/terminal/account) as a backup login.
+5. **⚠️ Disable X** at [bankr.bot/terminal/security](https://bankr.bot/terminal/security) (under "Control which platforms Bankr can respond to you on") — stops anyone tricking your agent into telling `@bankrbot` to move funds.
+6. **Create a Bankr API key** at [bankr.bot/api-keys](https://bankr.bot/api-keys) with the **Wallet API**, **Agent API**, and **LLM Gateway API** scopes and **Read-only Mode off** (leave allowed recipients empty) — this becomes `BANKR_API_KEY`.
+7. **Fund the Bankr wallet** with **≥ $20** USDC on Base for the first day; it self-funds from trading fees after.
+
+You don't need a token beforehand — `yappr deploy` can launch your agent's token for you (a fixed-supply token launched via Bankr on Base, with all trading fees routed to your agent's handle), or accept an existing address if you already have one.
 
 ## Get started
 
@@ -59,9 +64,9 @@ npx yappr init        # scaffolds config/ (starter skills, hooks, prompts) + .en
 
 Then:
 
-1. **Complete the [Bankr prerequisites](#before-you-run-yappr-deploy)** above (account, API key, optional Club, wallet funded).
+1. **Complete the [Bankr prerequisites](#before-you-run-yappr-deploy)** above (account, API key, wallet funded).
 2. **Customise `config/`** — edit `personality.md`, add your own [skills](#skills-configskills) and [hooks](#hooks-confighooks). All optional; the starters run as-is.
-3. Run **`npx yappr deploy`** — it prompts for any missing [env vars](#required-env-vars) (saving them to `.env`), launches the agent's token on Bankr (Club members) or accepts an existing address, provisions compute, uploads your `config/`, and starts the agent (see [Commands](#commands)).
+3. Run **`npx yappr deploy`** — it prompts for any missing [env vars](#required-env-vars) (saving them to `.env`), launches the agent's token on Bankr or accepts an existing address, provisions compute, uploads your `config/`, and starts the agent (see [Commands](#commands)).
 4. Done — your agent is live and self-funds from that point on.
 
 Want to watch it before deploying? `npx yappr start` runs it locally against your `config/` + `.env`. Re-run `npx yappr deploy` any time you change `config/`.
@@ -72,10 +77,10 @@ The deploy script prompts for each of these if not already set in `.env`:
 
 | Var | Description |
 |-----|-------------|
-| `BANKR_API_KEY` | Bankr API key — non-read-only, "Wallet & Agent API" enabled, **no recipient restrictions** |
+| `BANKR_API_KEY` | Bankr API key — Wallet API + Agent API + LLM Gateway API scopes, **Read-only Mode off**, **no recipient restrictions** |
 | `TWITTER_AUTH_TOKEN` | X session cookie `auth_token` — deploy can fetch it automatically via a browser login (see below) |
 | `TWITTER_CT0` | X CSRF token `ct0` — fetched together with `auth_token` by the browser login |
-| `TOKEN_ADDRESS` | Your agent's ERC20 token on Base — paste an existing address, or let `yappr deploy` launch one on Bankr for you (Bankr Club members) |
+| `TOKEN_ADDRESS` | Your agent's ERC20 token on Base — paste an existing address, or let `yappr deploy` launch one on Bankr for you |
 | `AGENT_HANDLE` | Your agent's Twitter handle (without @) |
 | `ADMIN_HANDLES` | Comma-separated handles that can invoke admin-only skills (without @) — optional, leave blank to disable |
 
@@ -87,7 +92,7 @@ The deploy script prompts for each of these if not already set in `.env`:
 
 **The agent's token:** when `TOKEN_ADDRESS` isn't set, `yappr deploy` asks whether your token already exists:
 - **Already deployed** — paste the `0x…` contract address.
-- **Launch it now** (Bankr Club members) — a short guided flow (name, ticker, optional image/X-post/website links) deploys a fixed-supply token on Base, gas sponsored, with all trading fees routed to your agent's X handle. The new address is written to `.env` as `TOKEN_ADDRESS`. Without a Club subscription this returns a 403; deploy then falls back to the paste-an-address prompt.
+- **Launch it now** — a short guided flow (name, ticker, optional image/X-post/website links) deploys a fixed-supply token on Base, gas sponsored, with all trading fees routed to your agent's X handle. The new address is written to `.env` as `TOKEN_ADDRESS`. If the launch fails for any reason, deploy falls back to the paste-an-address prompt.
 
 ### Optional env vars
 
@@ -113,6 +118,8 @@ All have sensible defaults; set them in `.env` to override:
 | `CRON_MIN_INTERVAL_MIN` | `5` | Shortest allowed "every N minutes" interval |
 | `CRON_RUN_TIMEOUT_MS` | `300000` | Per-run timeout on a cron job's agent loop |
 | `CRON_MAX_CONSECUTIVE_FAILURES` | `5` | Auto-pause a recurring job after this many consecutive failures |
+
+**Picking a `POLL_METHOD`:** the default `search` is the right choice in production — it polls `/tweets/search` for tweets mentioning your handle. The catch shows up during testing: if you mention your agent from a small or brand-new account, that tweet may not surface in X's "latest" search index, so the agent never sees it. For that case, switch to `POLL_METHOD=mentions` (the dedicated `/tweets/mentions` endpoint) while testing. With `mentions` you may also need to open your agent's notifications on X first, so the mention is registered there for the agent to pick up. **Never run a public agent on `mentions`** — use it only for testing, and keep `search` for production.
 
 ## Commands
 
@@ -422,13 +429,6 @@ To also survive **switching instances** (or losing the box), the database is mir
 **Restore** is offered automatically: when you `yappr deploy` to a **fresh** instance (no `yappr.db` present), it detects your latest local backup and prompts to upload it before starting the agent, so stats carry over. It never overwrites an existing database, so same-instance redeploys are untouched.
 
 Typical migration: run `yappr status` on the old box (leaves a current backup locally) → point `.env` at the new instance → `yappr deploy` → accept the restore prompt.
-
-## Bankr API key setup
-
-1. Go to [app.bankr.bot/api-keys](https://app.bankr.bot/api-keys)
-2. Create a new key with **Wallet & Agent API** access
-3. Ensure it is **not read-only**
-4. Leave **allowed recipients** empty (recipient restrictions block `eth_signTypedData_v4`)
 
 ## Running locally
 
