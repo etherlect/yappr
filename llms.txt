@@ -1,22 +1,20 @@
-# CLAUDE.md
+# yappr
 
-Architecture map for contributors working in this repo. For *using/forking* yappr
-(env vars, customising personality/skills/hooks), read `README.md` first — this
-file is about the code itself.
+> Orientation for LLMs and contributors working on the **yappr engine** — a
+> self-funding X/Twitter reply agent. It pays for every external call (X data, LLM
+> inference, compute) from a Bankr wallet topped up by its own token's trading fees.
+> **No private key is ever stored** — all signing and payments go through the Bankr
+> REST API.
 
-## What it is
-
-A self-funding X/Twitter reply agent. It pays for every external call (X data, LLM
-inference, compute) from a Bankr wallet that is topped up by its own token's trading
-fees. **No private key is ever stored** — all signing and payments go through the
-Bankr REST API.
+For *using/forking* yappr (env vars, customising personality/skills/hooks), read
+`README.md` first — this file is about the code itself.
 
 ## Commands
 
 This is the engine package. A consuming **instance** (its own `config/` + `.env`)
-depends on it via `file:../package` and runs it as `yappr <command>` — see the
-workspace `README.md` one level up. The CLI lives in `src/cli/` and ships as the
-`yappr` bin.
+depends on it via `file:../package` (or `npm i yappr`) and runs it as `yappr <command>`
+— see the workspace `README.md` one level up. The CLI lives in `src/cli/` and ships as
+the `yappr` bin.
 
 ```bash
 npm run dev        # run the agent from source (tsx watch; needs a .env here)
@@ -24,15 +22,21 @@ npm run typecheck  # tsc --noEmit — run this after any change
 npm run build      # compile to dist/  (the instance consumes dist/)
 ```
 
-`deploy` / `status` / `ssh` are normally run from an **instance** (`yappr deploy`,
-etc.) because they need the instance's `.env` + `config/`. `yappr deploy` bundles
-this engine with `npm pack` and installs the tarball on the server (TODO at release:
-`npm i yappr` instead). The `npm run deploy|status|ssh` scripts here are just the
-source runners for engine dev.
+`update` / `deploy` / `status` / `ssh` are normally run from an **instance** because
+they need the instance's `.env` + `config/`:
+
+- `yappr update` bumps the package to `yappr@latest`, then reconciles the newly-shipped
+  `config/` into the instance's `./config` — fast-forward files the user hasn't touched,
+  prompt on edits, add brand-new ones — and offers to redeploy. Also reachable from the
+  status dashboard's `u` key.
+- `yappr deploy` bundles this engine with `npm pack` and installs the tarball on the
+  server, then starts it under pm2 and opens the dashboard.
+
+The `npm run deploy|status|ssh` scripts here are just the source runners for engine dev.
 
 `tsconfig.json` type-checks (and builds) `src/` and `config/`; only `scripts/`
-(throwaway test scripts) is excluded. Imports use `.js` extensions (NodeNext ESM);
-`tsx` resolves them to `.ts` in dev, and user `.ts` config loads via jiti at runtime.
+(throwaway dev/diagnostic scripts) is excluded. Imports use `.js` extensions (NodeNext
+ESM); `tsx` resolves them to `.ts` in dev, and user `.ts` config loads via jiti at runtime.
 
 ## Three loops
 
@@ -68,7 +72,8 @@ also returns `chart` series — cumulative spend/earn over the last 24h (`day`),
 per-hour spend by category (`byType`, 24 clock-aligned buckets) — feeding an always-on
 CHART panel between ACTIVITY and LOGS with three views cycled by ←/→: 24h spent-vs-earned
 line chart (`asciichart`), hourly spent-vs-earned bars, and hourly expenses by category
-(stacked bars).
+(stacked bars). Footer lifecycle keys (each confirmed with `y`): `r`/`s`/`S`
+restart/stop/start, `d` redeploy, `u` update, `t` theme.
 
 While open, the dashboard snapshots the server DB into `instance/backups/yappr-<date>.db`
 (one file per day, rolling 7) via `cli/backup.ts` — SQLite `VACUUM INTO` over SSH
@@ -81,13 +86,13 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
 
 | Path | Role |
 |------|------|
-| `yappr.ts` | Entry point — boot order and the two loops |
+| `yappr.ts` | Entry point — boot order and the three loops |
 | `index.ts` | Public API surface (`"yappr"`) that skills/hooks import — engine services + the X SDK + types |
-| `cli/` | The `yappr` bin + commands: `init` (scaffold `config/` + `.env`), `start`, `deploy`, `status` (live dashboard), `ssh`, `help`. Plus the shared pieces: `cli/backup.ts` (DB snapshot/restore), `cli/charts.ts` (dashboard chart rendering — pure string-building), `cli/env.ts` (.env read/write for deploy), `cli/host-key.ts` (TOFU SSH host-key pinning → `.yappr-known-hosts`), `cli/ui.ts` (terminal styling + panel/kv layout primitives), `cli/x-login.ts` (browser-assisted X login: system Chrome via lazily-imported playwright-core → auth_token/ct0 cookies) |
+| `cli/` | The `yappr` bin + commands: `init` (scaffold `config/` + `.env`), `start`, `update`, `deploy`, `status` (live dashboard), `ssh`, `help`. Shared pieces: `cli/tui.ts` (banner / spinner / themed-prompt chrome shared by deploy + update), `cli/config-sync.ts` (config provenance — the `config/.yappr-sync.json` hash manifest `init` writes and `update` uses to tell edited files from untouched), `cli/backup.ts` (DB snapshot/restore), `cli/charts.ts` (dashboard chart rendering — pure string-building), `cli/env.ts` (.env read/write for deploy), `cli/host-key.ts` (TOFU SSH host-key pinning → `.yappr-known-hosts`), `cli/ui.ts` (terminal styling + panel/kv layout primitives), `cli/x-login.ts` (browser-assisted X login: system Chrome via lazily-imported playwright-core → auth_token/ct0 cookies) |
 | `config-loader.ts` | Loads `config/` from the project CWD (purely the user's add-ons — none essential); imports skill/hook modules natively, or user `.ts` via jiti (no build step) |
 | `config.ts` | Validated view of all env vars (the only place that reads `process.env`) |
-| `bankr.ts` | Single client for the Bankr REST API (sign, x402-pay, wallet, token launches) |
-| `wallet.ts` | Wallet init + `payFetch` (x402-billed fetch) + `submitTx` |
+| `bankr.ts` | Single client for the Bankr REST API (sign, x402-pay, wallet, token launches). Token launches go through a hardcoded launch-only key so forked instances can launch without their own Bankr Club subscription; trading fees still route to each operator's own handle |
+| `wallet.ts` | Wallet init + `payFetch` (x402-billed fetch) + `submitTx`; `recordSpend` categorises each paid call (`x-api` / `compute` / `x402`) |
 | `x402.ts` | x402 scheme wiring: a client-side x402 fetch whose EIP-3009 payment authorizations are signed via Bankr `/wallet/sign` — backs the agent's `payFetch` (`wallet.ts`) and the CLI |
 | `compute.ts` | x402 Compute API client — used by the CLI (`deploy`/`status`/`ssh`) |
 | `agent-prompt.ts` | Bankr natural-language agent jobs — used by the `wallet` skill |
@@ -101,7 +106,7 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
 | `db.ts` | The one shared SQLite connection (`better-sqlite3`) → app DB `yappr.db` at `DB_PATH` (persisted outside `/yappr` on the server). Each feature creates its own tables against it |
 | `state.ts` | Durable agent state in the shared DB's `state` table: last mention processed |
 | `storage.ts` | Public storage API for skills/hooks: `skillStore(ns)` — namespaced KV over one shared `skill_kv` table (exported from `index.ts` together with `withSchema` + the `Database` type, for skills that need their own `skill_<name>_*` tables) |
-| `stats.ts` | Stats ledger on the shared DB: spend/earn/activity `events` + `meta` gauges + `summary()` (also returns trailing-window spend/earn for the dashboard's runway estimate, and the `chart` series — `day`/`all` cumulative + `byType` hourly — for the CHART panel). Inference spend is costed per-request in `llm/index.ts`. `stats-cli.ts` is its CLI (`summary` \| `backup`), used by the status dashboard over SSH |
+| `stats.ts` | Stats ledger on the shared DB: spend/earn/activity `events` + `meta` gauges + `summary()` (also returns trailing-window spend/earn for the dashboard's runway estimate, and the `chart` series — `day`/`all` cumulative + `byType` hourly — for the CHART panel). Inference spend is costed per-request in `llm/index.ts`. `stats-cli.ts` is its CLI (`summary` \| `backup` \| `record-spend`), used by the status dashboard over SSH |
 | `util.ts`, `log.ts` | `sleep`/`requireEnv`/`envNumber` (lenient numeric env, vs. `config.ts`'s strict `numeric`), and the pino logger |
 
 ## Conventions
@@ -115,6 +120,10 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
   `exports` self-references it: the `development` condition → `src` (dev, hence
   `tsx --conditions=development`), `default` → `dist` (prod); `tsconfig` `paths`
   resolves it for typechecking.
+- **Scaffolded config is tracked for updates.** `init` records a hash manifest at
+  `config/.yappr-sync.json`; `yappr update` uses it to fast-forward only the files the
+  user hasn't edited (Debian `.rpmnew`-style), prompting before it ever overwrites a
+  local change. The manifest is dot-prefixed, so the config loader ignores it.
 - **All money/identity goes through Bankr** (`src/bankr.ts`). No keys on disk.
 - **`src/x/client.ts` is a deliberately complete SDK.** Not every method is wired to
   a skill; they're building blocks for skill authors. Keep it that way.

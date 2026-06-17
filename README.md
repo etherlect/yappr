@@ -471,4 +471,4 @@ Set `TREASURY_DRY_RUN=true` + short `TREASURY_INTERVAL_MS` to verify the treasur
 
 ## Contributing
 
-Working on the engine itself (not just configuring your own agent)? See [`CLAUDE.md`](./CLAUDE.md) for a map of `src/`, the two runtime loops, and the project's conventions.
+Working on the engine itself (not just configuring your own agent)? See [`llms.txt`](./llms.txt) for a map of `src/`, the three runtime loops, and the project's conventions.
