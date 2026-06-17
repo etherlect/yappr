@@ -64,7 +64,7 @@ npx yappr init        # scaffolds config/ (starter skills, hooks, prompts) + .en
 
 Then:
 
-1. **Complete the [Bankr prerequisites](#before-you-run-yappr-deploy)** above (account, API key, wallet funded).
+1. **Complete the [Before you deploy prerequisites](#before-you-run-yappr-deploy)** above (account, API key, wallet funded).
 2. **Customise `config/`** — edit `personality.md`, add your own [skills](#skills-configskills) and [hooks](#hooks-confighooks). All optional; the starters run as-is.
 3. Run **`npx yappr deploy`** — it prompts for any missing [env vars](#required-env-vars) (saving them to `.env`), launches the agent's token on Bankr or accepts an existing address, provisions compute, uploads your `config/`, and starts the agent (see [Commands](#commands)).
 4. Done — your agent is live and self-funds from that point on.
