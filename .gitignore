@@ -6,3 +6,9 @@ yappr.db-wal
 yappr.db-shm
 .DS_Store
 *.log
+
+# Throwaway dev/diagnostic scripts — not shipped to npm, not needed by users.
+scripts/*
+
+# Staging dir produced by `npm run publish:pre`.
+.publish/

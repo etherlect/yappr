@@ -9,8 +9,10 @@ import { createConnection } from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { NodeSSH } from "node-ssh";
-import { input as inputPrompt, password as passwordPrompt, confirm as confirmPrompt, select as selectPrompt } from "@inquirer/prompts";
-import ora, { type Ora } from "ora";
+import {
+  input, password, select, confirm, uiWidth, banner, step, kv, printPanel,
+  ok, info, warn, fail, spin, themeText,
+} from "./tui.js";
 import { bankrApi, deployTokenLaunch } from "../bankr.js";
 import { createBankrSigner, createPayFetch } from "../x402.js";
 import {
@@ -26,8 +28,8 @@ import {
   resolveEvmAddress,
 } from "../compute.js";
 import {
-  dim, bold, green, yellow, red, accent, border, YAPPR_LOGO,
-  kv as kvRow, fit, panel, sideBySide, centerRows,
+  dim, bold, green, yellow, red, accent, border,
+  kv as kvRow, fit, panel,
   setTheme, detectTerminalTheme, themeLine,
 } from "./ui.js";
 import { isUnset, setEnvVar, setEnvVarInContent, removeEnvVarInContent } from "./env.js";
@@ -38,120 +40,10 @@ import { hostKeyConfig } from "./host-key.js";
 
 const execFileAsync = promisify(execFile);
 
-// Inquirer renders its own prompt line (prefix + message + answer) through its
-// theme, not our console.log — so without this it falls back to inquirer's
-// default green "?" and the terminal's own foreground, clashing with the
-// Base-blue palette the rest of deploy (and the status dashboard) uses. Paint
-// the prefix/message/answer in the current palette so prompts match too; the
-// palette is auto-detected (dark/light) at the top of main().
-const promptTheme = {
-  prefix: { idle: accent("?"), done: green("✔") },
-  style: {
-    message: (text: string) => themeLine(text),
-    answer: (text: string) => accent(text),
-    // dim() only adds the dim attribute (no color) → the "(Y/n)" hint would fall
-    // back to the terminal's own foreground (green). Layer dim over the palette
-    // color so it stays a muted blue.
-    defaultAnswer: (text: string) => dim(accent(text)),
-    highlight: (text: string) => accent(text),
-  },
-};
-const withTheme = <C extends { theme?: unknown }>(cfg: C): C =>
-  ({ ...cfg, theme: { ...promptTheme, ...(cfg.theme as object ?? {}) } });
-
-const input: typeof inputPrompt = (cfg, ctx) => inputPrompt(withTheme(cfg), ctx);
-const password: typeof passwordPrompt = (cfg, ctx) => passwordPrompt(withTheme(cfg), ctx);
-const inquirerConfirm: typeof confirmPrompt = (cfg, ctx) => confirmPrompt(withTheme(cfg), ctx);
-function select<Value>(cfg: Parameters<typeof selectPrompt<Value>>[0], ctx?: Parameters<typeof selectPrompt<Value>>[1]) {
-  return selectPrompt<Value>(withTheme(cfg), ctx);
-}
-
 // Engine package root. This file is <root>/dist/src/cli/deploy.js in prod (or
 // <root>/src/cli/deploy.ts in dev), so the root is three levels up. Used to build +
 // pack the engine into a tarball the server installs.
 const ENGINE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-
-// Panel width for the deploy chrome (banner, summary boxes) — match the terminal,
-// capped so the boxes stay readable on very wide windows.
-function uiWidth(): number {
-  return Math.max(48, Math.min((process.stdout.columns ?? 80) - 1, 78));
-}
-
-// Header: the bare logo art with the title floating beside it, vertically centred.
-function banner(subtitle: string) {
-  const logoW = 17; // raw logo art width (no box)
-  const h = YAPPR_LOGO.length;
-  const info = centerRows([
-    `${bold("YAPPR")} ${dim("—")} ${bold("Deploy")}`,
-    dim(subtitle),
-  ], h).map((line: string) => `  ${line}`);
-  console.log("");
-  // fit() each logo row to a fixed width so the text column lines up exactly.
-  for (const row of sideBySide(YAPPR_LOGO.map((l) => "  " + fit(l, logoW)), logoW + 2, info, 0)) {
-    console.log(row);
-  }
-}
-
-// Step header styled like a dashboard panel title: bold caps in a logo-green rule.
-function step(n: number, total: number, label: string) {
-  const name = label.toUpperCase();
-  const counter = `step ${n}/${total}`;
-  const fill = Math.max(2, uiWidth() - name.length - counter.length - 10);
-  console.log("");
-  console.log(`  ${border("──")} ${bold(name)} ${border("─".repeat(fill))} ${dim(counter)} ${border("──")}`);
-}
-
-// Aligned dim-label key/value row (the shared kv style from the status dashboard).
-function kv(key: string, value: string) {
-  console.log(`  ${kvRow(key, value)}`);
-}
-
-// Print a status-style bordered panel at the deploy flow's 2-space indent.
-function printPanel(title: string, content: string[]) {
-  for (const line of panel(title, content, uiWidth() - 2)) console.log(`  ${line}`);
-}
-
-function ok(msg: string) { console.log(`  ${green("✓")}  ${msg}`); }
-function info(msg: string) { console.log(`     ${dim(msg)}`); }
-function warn(msg: string) { console.log(`  ${yellow("⚠")}  ${yellow(msg)}`); }
-function fail(msg: string) { console.log(`  ${red("✗")}  ${red(msg)}`); }
-
-// ora's clear() parks the cursor at the `indent` column, so a following
-// console.log would inherit those spaces. Reset to column 0 first so spinner
-// result lines line up exactly with ok()/fail() lines.
-function stopSpinner(spinner: Ora): void {
-  spinner.stop();
-  if (process.stdout.isTTY) process.stdout.cursorTo(0);
-}
-
-// ora draws its frame straight to the stream (not via our themed console.log),
-// so its label text would render in the terminal's own foreground (green).
-// themeText paints it in the palette; stripAnsi recovers the raw label for the
-// static done line, which ok() re-themes.
-const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
-const themeText = (s: string) => themeLine(stripAnsi(s));
-
-// Run an async task behind a spinner, then resolve to a static line that uses
-// the same ✓/✗ glyphs and spacing as ok()/fail() so everything stays aligned.
-async function spin<T>(label: string, fn: (spinner: Ora) => Promise<T>, doneLabel?: string): Promise<T> {
-  const spinner = ora({ text: themeText(label), indent: 2 }).start();
-  try {
-    const result = await fn(spinner);
-    const text = stripAnsi(spinner.text);
-    stopSpinner(spinner);
-    ok(doneLabel ?? text);
-    return result;
-  } catch (err) {
-    stopSpinner(spinner);
-    fail(label);
-    throw err;
-  }
-}
-
-// `confirm` from inquirer, wrapped so Ctrl-C exits cleanly instead of throwing
-async function confirm(message: string, defaultValue = false): Promise<boolean> {
-  return inquirerConfirm({ message, default: defaultValue });
-}
 
 // Shared field validators (used for TOKEN_ADDRESS, DEV_ADDRESS, and the token-launch
 // fallback). A 0x… 40-hex EVM address, and a plain http(s) URL.
@@ -428,7 +320,7 @@ async function main() {
 
   const TOTAL_STEPS = 7;
 
-  banner("Self-sustaining AI agent on X");
+  banner("Deploy", "Self-sustaining AI agent on X");
 
   if (process.env.CLOUD_INSTANCE === "true") {
     console.error("\n  This looks like the deployed cloud instance.");

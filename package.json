@@ -14,8 +14,7 @@
   "files": [
     "dist",
     "config",
-    ".env.example",
-    "README.md"
+    ".env.example"
   ],
   "exports": {
     ".": {
@@ -33,6 +32,7 @@
     "start": "node dist/src/yappr.js",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "publish:pre": "npm run build && node scripts/publish-pre.mjs",
     "deploy": "tsx src/cli/deploy.ts",
     "ssh": "tsx src/cli/ssh.ts",
     "status": "tsx src/cli/status.ts"

@@ -1,6 +1,7 @@
 import { cp, mkdir, access } from "node:fs/promises";
 import { basename, dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { manifestForDir, saveManifest } from "./config-sync.js";
 
 // The installed package ships a starter config/ + .env.example (see package.json
 // "files"); init copies them into the user's project so they have something useful
@@ -28,6 +29,9 @@ export async function runInit(targetArg = "."): Promise<void> {
       recursive: true,
       filter: (src) => !basename(src).startsWith("."),
     });
+    // Record what we scaffolded so `yappr update` can later tell which files the user
+    // edited from those still pristine, and fast-forward only the untouched ones.
+    await saveManifest(destConfig, await manifestForDir(destConfig));
     console.log("• scaffolded config/ — starter skills, hooks and context (edit or delete freely)");
   }
 

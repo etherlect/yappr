@@ -9,6 +9,7 @@ Usage: yappr <command> [args]
 
   init [dir]        Scaffold a project (config/ + .env.example) into dir (default: .)
   start             Run the agent — loads ./config and ./.env
+  update            Update the engine + sync new skills/hooks/context into ./config
   deploy            Provision + deploy to an x402 compute instance
   status [id]       Live dashboard for the deployed instance
   ssh [id]          Open an interactive shell on the deployed instance
@@ -37,6 +38,7 @@ try {
       // Booting the agent is a side effect of importing its entry module.
       await import("../yappr.js");
       break;
+    case "update": await delegate("./update.js"); break;
     case "deploy": await delegate("./deploy.js"); break;
     case "status": await delegate("./status.js"); break;
     case "ssh": await delegate("./ssh.js"); break;

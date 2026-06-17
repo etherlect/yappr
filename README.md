@@ -122,12 +122,45 @@ With `yappr` installed in your project (`npm i yappr`), run any command with `np
 |---------|--------------|
 | `npx yappr init [dir]` | Scaffold a new project — copies the starter `config/` (context, skills, hooks) and a `.env.example` into `dir` (default: current directory). Run once when setting up; never overwrites existing files. |
 | `npx yappr start` | Run the agent locally, loading `./config` and `./.env`. Starts all three loops (reply poller + hourly treasury + cron scheduler). Ctrl-C to stop. |
+| `npx yappr update` | Update the engine to the latest release **and** sync newly-shipped skills/hooks/context into your `config/` — preserving anything you've edited. Offers to redeploy at the end. See [Updating](#updating). |
 | `npx yappr deploy` | Interactive deploy: prompts for any missing env vars (and saves them to `.env`), provisions or reuses an x402 compute instance, seeds LLM credits, uploads the engine + your `config/` + `.env`, starts the agent under pm2, then opens the dashboard. On a fresh instance it offers to restore your latest local DB backup. |
 | `npx yappr status [id]` | Live dashboard for the deployed instance over SSH (treasury, runway, activity, logs). Also pulls periodic DB backups while open. Optional `id` overrides `COMPUTE_INSTANCE_ID`. |
 | `npx yappr ssh [id]` | Open an interactive root shell on the deployed instance. Optional `id` overrides `COMPUTE_INSTANCE_ID`. |
 | `npx yappr help` | List the commands. |
 
 `deploy`, `status`, and `ssh` resolve the target box from `COMPUTE_INSTANCE_ID` / `COMPUTE_HOST` in your `.env` (or the optional `[id]` argument). On first connect they pin the box's SSH host key in `.yappr-known-hosts` (next to `.env`) and refuse a changed key afterwards — if you reprovision the instance, delete its line from that file and reconnect.
+
+## Updating
+
+New yappr releases ship engine fixes **and** improved starter skills/hooks/context. `npx yappr init` copied that `config/` into your project once, and from then on it's *yours* — so a plain `npm update` refreshes the engine but never touches your skills. `npx yappr update` bridges that gap.
+
+Run it from your instance directory (where your `config/` and `.env` live):
+
+```bash
+cd my-agent
+npx yappr update
+```
+
+It runs two phases:
+
+1. **Engine** — installs `yappr@latest` with your package manager (npm/pnpm/yarn/bun, picked by lockfile).
+2. **Config** — reconciles the newly-shipped `config/` into your `./config`, file by file:
+   - **You never touched it** → fast-forwarded to the new version.
+   - **You edited it** → left alone; you're asked whether to keep yours, take the new one, or view a diff.
+   - **Brand-new skill/hook/context** → added. If a file of the same name already exists (you made your own), you're asked before it's overwritten.
+
+"Edited vs untouched" is tracked in `config/.yappr-sync.json`, a manifest `init` writes and `update` maintains (it's dot-prefixed, so the agent's loader ignores it). Instances created before this manifest existed safely treat every existing file as edited — you'll just be asked rather than silently overwritten.
+
+When it finishes, your **local** `config/` and engine are current, but your **live agent is still running the old version** — `update` reminds you and offers to redeploy. You can also trigger the whole flow from the [status dashboard](#status-dashboard) with the **`u`** key.
+
+Flags:
+
+| Flag | Effect |
+|------|--------|
+| `--config-only` | Skip the package install; only reconcile config from the currently-installed version. |
+| `--yes` / `-y` | Non-interactive: fast-forward untouched files, **keep** your edits on every conflict (never clobbers). |
+| `--theirs` | Non-interactive: take the new version on every conflict. |
+| `--ours` | Non-interactive: keep your version on every conflict. |
 
 ## Customising the agent
 
@@ -396,6 +429,8 @@ Two **separate fuel tanks** back the agent: **USDC** pays X-API + compute, **LLM
 WETH earnings are converted with the live ETH price (DefiLlama). The window length, the ≥1h data threshold, and the predicted poll cost are constants in `src/cli/status.ts`.
 
 Below the ACTIVITY row, a CHART panel offers four views (cycle with ←/→): hourly spent-vs-earned bars (24h), hourly expenses stacked by category (x-api / inference / compute), and cumulative spent-vs-earned line charts over all time and the last 24h.
+
+The footer carries lifecycle commands (each asks for confirmation): `r` restart, `s` stop, `S` start, `d` redeploy, **`u` update** (runs [`yappr update`](#updating)), and `t` to toggle the dark/light theme.
 
 ## Backups
 

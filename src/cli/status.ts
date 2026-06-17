@@ -483,7 +483,7 @@ function buildCronFrame(state: State, cols: number, rows: number): string[] {
 
   out.push(footerLine(state, [
     key("←/→", "page"), key("shift+←/→", "status"), key("t", "theme"),
-    key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"),
+    key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"), key("u", "update"),
     key("q", "quit"),
   ], cols));
   return out;
@@ -728,7 +728,7 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   // Footer: a confirmation prompt when a command is pending, otherwise key hints.
   out.push(footerLine(state, [
     key("up/dn", "scroll"), key("g/G", "top/live"), key("←/→", "chart"), key("shift+←/→", "cron"),
-    key("t", "theme"), key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"),
+    key("t", "theme"), key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"), key("u", "update"),
     key("q", "quit"),
   ], cols));
 
@@ -789,6 +789,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
   let computeRetryTimer: NodeJS.Timeout | undefined;
   let onKey: ((buf: Buffer) => void) | undefined;
   let redeployPromise: Promise<void> | null = null;
+  let updatePromise: Promise<void> | null = null;
   let done = false;
   const stopTimers = () => {
     if (renderTimer) clearInterval(renderTimer);
@@ -916,6 +917,20 @@ export async function runStatus(target: { ip: string; password?: string; handle?
       child.on("error", (e) => { console.error(e); res(); });
     });
   };
+  // Update hands off to `npx yappr update` (engine bump + config sync), which itself
+  // offers to redeploy at the end (relaunching this dashboard). Same teardown as
+  // redeploy so the child owns stdin/stdout.
+  const update = () => {
+    if (updatePromise) return;
+    updatePromise = new Promise<void>((res) => {
+      cleanup();
+      process.stdout.write("\x1b[?25h\x1b[2J\x1b[3J\x1b[H");
+      console.log("Updating — handing off to `npx yappr update`…\n");
+      const child = spawn("npx", ["yappr", "update"], { stdio: "inherit", cwd: ROOT });
+      child.on("exit", () => res());
+      child.on("error", (e) => { console.error(e); res(); });
+    });
+  };
 
   // Best-effort enrichments (don't block the dashboard).
   state.pm2 = await fetchPm2(ssh).catch(() => null);
@@ -959,6 +974,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
         if (s === "s") { state.confirm = { prompt: "Stop yappr?", action: () => void runPm2("stop") }; render(state); return; }
         if (s === "S") { state.confirm = { prompt: "Start yappr?", action: () => void runPm2("start") }; render(state); return; }
         if (s === "d") { state.confirm = { prompt: "Re-deploy yappr? (exits dashboard)", action: redeploy }; render(state); return; }
+        if (s === "u") { state.confirm = { prompt: "Update yappr & sync skills? (exits dashboard)", action: update }; render(state); return; }
         if (s === "t") { toggleTheme(); render(state); return; } // dark ↔ light palette
         // shift+←/→ slides between the two pages (cyclical, so both keys work).
         if (s === "\x1b[1;2C" || s === "\x1b[1;2D") {
@@ -1028,8 +1044,9 @@ export async function runStatus(target: { ip: string; password?: string; handle?
     process.off("SIGINT", quit);
     cleanup();
   }
-  // If a re-deploy is in progress, keep the process alive until the deploy finishes.
+  // If a re-deploy or update is in progress, keep the process alive until it finishes.
   if (redeployPromise) await redeployPromise;
+  if (updatePromise) await updatePromise;
 }
 
 // ─── connection target resolution ─────────────────────────────────────────────
