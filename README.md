@@ -277,13 +277,9 @@ The gate is enforced **in code on every call**, never trusted to the LLM: the as
 
 ## Storing data
 
-Skills get persistent storage in the agent's own SQLite DB — **don't open your own
-files**: data in the shared DB lives at `DB_PATH` (outside the dir wiped on redeploy)
-and rides along in the `yappr status` rolling backups; a file next to your skill
-does neither.
+Skills get persistent storage in the agent's own SQLite DB — **don't open your own files**: data in the shared DB lives at `DB_PATH` (outside the dir wiped on redeploy) and rides along in the `yappr status` rolling backups; a file next to your skill does neither.
 
-For the common case, `skillStore(namespace)` is a key/value store with zero SQL —
-e.g. a "remember that…" skill keeping per-user notes:
+For the common case, `skillStore(namespace)` is a key/value store with zero SQL — e.g. a "remember that…" skill keeping per-user notes:
 
 ```ts
 // config/skills/remember/handler.ts
@@ -303,22 +299,11 @@ export const handler: SkillHandler = async (params, tweet) => {
 };
 ```
 
-Values are strings; for structured data use `setJSON(key, value)` /
-`getJSON<T>(key)`, which handle the (de)serialisation and return `null` for
-missing or corrupt entries instead of throwing.
+Values are strings; for structured data use `setJSON(key, value)` / `getJSON<T>(key)`, which handle the (de)serialisation and return `null` for missing or corrupt entries instead of throwing.
 
-All namespaces share one `skill_kv` table keyed on `(namespace, key)`; a store only
-ever sees its own namespace, so name it after your skill unless two extensions are
-deliberately sharing data. Everything is best-effort like the rest of the engine:
-if the DB can't be opened, reads return empty and writes no-op rather than crashing
-the agent — but failed operations are logged (`warn`), so a value that didn't store
-(e.g. a non-string sneaking in from LLM-provided params) shows up in the logs.
+All namespaces share one `skill_kv` table keyed on `(namespace, key)`; a store only ever sees its own namespace, so name it after your skill unless two extensions are deliberately sharing data. Everything is best-effort like the rest of the engine: if the DB can't be opened, reads return empty and writes no-op rather than crashing the agent — but failed operations are logged (`warn`), so a value that didn't store (e.g. a non-string sneaking in from LLM-provided params) shows up in the logs.
 
-Need real columns instead of KV? `withSchema(ddl)` returns the shared
-`better-sqlite3` connection with your DDL applied (once per process) — the same
-mechanism engine features use. Prefix your tables `skill_<name>_` to stay clear of
-engine tables, and don't write to tables you don't own (`state`, `events`, `meta`,
-`cron_jobs` back the agent's state, stats and cron):
+Need real columns instead of KV? `withSchema(ddl)` returns the shared `better-sqlite3` connection with your DDL applied (once per process) — the same mechanism engine features use. Prefix your tables `skill_<name>_` to stay clear of engine tables, and don't write to tables you don't own (`state`, `events`, `meta`, `cron_jobs` back the agent's state, stats and cron):
 
 ```ts
 import { withSchema, type Database } from "yappr";
@@ -328,12 +313,9 @@ const db = (): Database | null => withSchema(
 );
 ```
 
-Note there are no migrations: the DDL is `IF NOT EXISTS`, so editing it later
-(e.g. adding a column) does nothing on databases where the table already exists —
-run your own `ALTER TABLE` for that.
+Note there are no migrations: the DDL is `IF NOT EXISTS`, so editing it later (e.g. adding a column) does nothing on databases where the table already exists — run your own `ALTER TABLE` for that.
 
-Inspecting data is plain SQLite — locally or against a backup:
-`sqlite3 yappr.db "SELECT * FROM skill_kv WHERE ns='remember'"`.
+Inspecting data is plain SQLite — locally or against a backup: `sqlite3 yappr.db "SELECT * FROM skill_kv WHERE ns='remember'"`.
 
 ## Hooks (`config/hooks/`)
 
@@ -351,14 +333,7 @@ export const hooks: AgentHooks = {
 
 Available hooks: `onMention`, `shouldReply`, `onBeforeInference`, `onAfterInference`, `onBeforeReply`, `onAfterReply`, `onBeforeClaim`, `onAfterClaim`, `onSwap`.
 
-The starter `config/hooks/user-memory.ts` is a working example combining three of
-them with `skillStore`: it records every mention a user sends (`onMention`) and the
-agent's posted answer (`onAfterReply`), and injects that user's last 50 exchanges
-into the prompt on their next ask (`onBeforeInference`) — so the agent remembers
-past conversations per user. Capture is free (the tweets already flow through the
-pipeline; nothing calls the paid X API), but the injected block does add prompt
-tokens on every inference call, bounded by its 50-exchange / 280-chars-per-side
-caps. Delete the file to turn memory off.
+The starter `config/hooks/user-memory.ts` is a working example combining three of them with `skillStore`: it records every mention a user sends (`onMention`) and the agent's posted answer (`onAfterReply`), and injects that user's last 50 exchanges into the prompt on their next ask (`onBeforeInference`) — so the agent remembers past conversations per user. Capture is free (the tweets already flow through the pipeline; nothing calls the paid X API), but the injected block does add prompt tokens on every inference call, bounded by its 50-exchange / 280-chars-per-side caps. Delete the file to turn memory off.
 
 ## Cron jobs (scheduled prompts)
 

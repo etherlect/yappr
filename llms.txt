@@ -1,20 +1,12 @@
 # yappr
 
-> Orientation for LLMs and contributors working on the **yappr engine** — a
-> self-funding X/Twitter reply agent. It pays for every external call (X data, LLM
-> inference, compute) from a Bankr wallet topped up by its own token's trading fees.
-> **No private key is ever stored** — all signing and payments go through the Bankr
-> REST API.
+> Orientation for LLMs and contributors working on the **yappr engine** — a self-funding X/Twitter reply agent. It pays for every external call (X data, LLM inference, compute) from a Bankr wallet topped up by its own token's trading fees. **No private key is ever stored** — all signing and payments go through the Bankr REST API.
 
-For *using/forking* yappr (env vars, customising personality/skills/hooks), read
-`README.md` first — this file is about the code itself.
+For *using/forking* yappr (env vars, customising personality/skills/hooks), read `README.md` first — this file is about the code itself.
 
 ## Commands
 
-This is the engine package. A consuming **instance** (its own `config/` + `.env`)
-depends on it via `file:../package` (or `npm i yappr`) and runs it as `yappr <command>`
-— see the workspace `README.md` one level up. The CLI lives in `src/cli/` and ships as
-the `yappr` bin.
+This is the engine package. A consuming **instance** (its own `config/` + `.env`) depends on it via `file:../package` (or `npm i yappr`) and runs it as `yappr <command>` — see the workspace `README.md` one level up. The CLI lives in `src/cli/` and ships as the `yappr` bin.
 
 ```bash
 npm run dev        # run the agent from source (tsx watch; needs a .env here)
@@ -22,65 +14,30 @@ npm run typecheck  # tsc --noEmit — run this after any change
 npm run build      # compile to dist/  (the instance consumes dist/)
 ```
 
-`update` / `deploy` / `status` / `ssh` are normally run from an **instance** because
-they need the instance's `.env` + `config/`:
+`update` / `deploy` / `status` / `ssh` are normally run from an **instance** because they need the instance's `.env` + `config/`:
 
-- `yappr update` bumps the package to `yappr@latest`, then reconciles the newly-shipped
-  `config/` into the instance's `./config` — fast-forward files the user hasn't touched,
-  prompt on edits, add brand-new ones — and offers to redeploy. Also reachable from the
-  status dashboard's `u` key.
-- `yappr deploy` bundles this engine with `npm pack` and installs the tarball on the
-  server, then starts it under pm2 and opens the dashboard.
+- `yappr update` bumps the package to `yappr@latest`, then reconciles the newly-shipped `config/` into the instance's `./config` — fast-forward files the user hasn't touched, prompt on edits, add brand-new ones — and offers to redeploy. Also reachable from the status dashboard's `u` key.
+- `yappr deploy` bundles this engine with `npm pack` and installs the tarball on the server, then starts it under pm2 and opens the dashboard.
 
 The `npm run deploy|status|ssh` scripts here are just the source runners for engine dev.
 
-`tsconfig.json` type-checks (and builds) `src/` and `config/`; only `scripts/`
-(throwaway dev/diagnostic scripts) is excluded. Imports use `.js` extensions (NodeNext
-ESM); `tsx` resolves them to `.ts` in dev, and user `.ts` config loads via jiti at runtime.
+`tsconfig.json` type-checks (and builds) `src/` and `config/`; only `scripts/` (throwaway dev/diagnostic scripts) is excluded. Imports use `.js` extensions (NodeNext ESM); `tsx` resolves them to `.ts` in dev, and user `.ts` config loads via jiti at runtime.
 
 ## Three loops
 
 Everything runs from one process (`src/yappr.ts`), which starts three timers:
 
-1. **Reply loop** — `reply/poller.ts` polls for new @mentions, then `reply/pipeline.ts`
-   handles each one: gather thread context → gating (`reply/gating.ts`) → the agent
-   reasoning loop (`reply/agent.ts`) → post the reply. The agent loop emits one JSON
-   step per turn (call a skill, or reply) until it replies or hits `AGENT_MAX_STEPS`.
-2. **Treasury loop** — `treasury/cycle.ts` runs hourly: check claimable fees and
-   claim only if there are any → optional dev cut → burn → keep a small ETH gas
-   reserve → swap WETH→USDC → extend compute. This is what makes the agent
-   self-funding. `treasury/index.ts` holds the on-chain calls.
-3. **Cron loop** — `cron/runner.ts` ticks every 10s over the `cron_jobs` table and
-   replays each due job's stored prompt through the same agent loop, sequentially
-   (privileges re-derived from `ADMIN_HANDLES` per run; results stored in the row,
-   never posted). Jobs are created/managed by a `config/skills/cron/` skill via the
-   store/validation API exported from `src/index.ts`.
+1. **Reply loop** — `reply/poller.ts` polls for new @mentions, then `reply/pipeline.ts` handles each one: gather thread context → gating (`reply/gating.ts`) → the agent reasoning loop (`reply/agent.ts`) → post the reply. The agent loop emits one JSON step per turn (call a skill, or reply) until it replies or hits `AGENT_MAX_STEPS`.
+2. **Treasury loop** — `treasury/cycle.ts` runs hourly: check claimable fees and claim only if there are any → optional dev cut → burn → keep a small ETH gas reserve → swap WETH→USDC → extend compute. This is what makes the agent self-funding. `treasury/index.ts` holds the on-chain calls.
+3. **Cron loop** — `cron/runner.ts` ticks every 10s over the `cron_jobs` table and replays each due job's stored prompt through the same agent loop, sequentially (privileges re-derived from `ADMIN_HANDLES` per run; results stored in the row, never posted). Jobs are created/managed by a `config/skills/cron/` skill via the store/validation API exported from `src/index.ts`.
 
-Boot also prefetches LLM pricing (`loadModelPricing`, for inference costing) and starts
-a minute timer polling all-time earnings (`treasury.lifetimeEarned` → `recordEarned`).
+Boot also prefetches LLM pricing (`loadModelPricing`, for inference costing) and starts a minute timer polling all-time earnings (`treasury.lifetimeEarned` → `recordEarned`).
 
 ## Status dashboard & backups
 
-`yappr status` (`cli/status.ts`) renders a live terminal dashboard by SSHing into the
-deployed box. It reads counters by running `stats-cli summary` remotely (never scrapes
-logs) and derives three health metrics from the ledger + live on-chain balances:
-**Runway** (treasury USD ÷ gross burn across two tanks — USDC for x-api+compute, credits
-for inference — whichever empties first; cold-start and a downtime floor use the
-poll-cadence cost), **Sustainable** (window earnings ≥ window spend) and **Profitable**
-(all-time earnings − spend). The trailing-window figures come from `summary()`, which
-also returns `chart` series — cumulative spend/earn over the last 24h (`day`), plus
-per-hour spend by category (`byType`, 24 clock-aligned buckets) — feeding an always-on
-CHART panel between ACTIVITY and LOGS with three views cycled by ←/→: 24h spent-vs-earned
-line chart (`asciichart`), hourly spent-vs-earned bars, and hourly expenses by category
-(stacked bars). Footer lifecycle keys (each confirmed with `y`): `r`/`s`/`S`
-restart/stop/start, `d` redeploy, `u` update, `t` theme.
+`yappr status` (`cli/status.ts`) renders a live terminal dashboard by SSHing into the deployed box. It reads counters by running `stats-cli summary` remotely (never scrapes logs) and derives three health metrics from the ledger + live on-chain balances: **Runway** (treasury USD ÷ gross burn across two tanks — USDC for x-api+compute, credits for inference — whichever empties first; cold-start and a downtime floor use the poll-cadence cost), **Sustainable** (window earnings ≥ window spend) and **Profitable** (all-time earnings − spend). The trailing-window figures come from `summary()`, which also returns `chart` series — cumulative spend/earn over the last 24h (`day`), plus per-hour spend by category (`byType`, 24 clock-aligned buckets) — feeding an always-on CHART panel between ACTIVITY and LOGS with three views cycled by ←/→: 24h spent-vs-earned line chart (`asciichart`), hourly spent-vs-earned bars, and hourly expenses by category (stacked bars). Footer lifecycle keys (each confirmed with `y`): `r`/`s`/`S` restart/stop/start, `d` redeploy, `u` update, `t` theme.
 
-While open, the dashboard snapshots the server DB into `instance/backups/yappr-<date>.db`
-(one file per day, rolling 7) via `cli/backup.ts` — SQLite `VACUUM INTO` over SSH
-(consistent, no `-wal`/`-shm`), on launch, every 20 min, and on quit. `yappr deploy`
-restores the latest local backup onto a **fresh** instance (never clobbers an existing
-DB); the DB otherwise survives same-instance redeploys because it lives at
-`/var/lib/yappr` (`DB_PATH`), outside the wiped `/yappr`.
+While open, the dashboard snapshots the server DB into `instance/backups/yappr-<date>.db` (one file per day, rolling 7) via `cli/backup.ts` — SQLite `VACUUM INTO` over SSH (consistent, no `-wal`/`-shm`), on launch, every 20 min, and on quit. `yappr deploy` restores the latest local backup onto a **fresh** instance (never clobbers an existing DB); the DB otherwise survives same-instance redeploys because it lives at `/var/lib/yappr` (`DB_PATH`), outside the wiped `/yappr`.
 
 ## src/ map
 
@@ -111,26 +68,11 @@ DB); the DB otherwise survives same-instance redeploys because it lives at
 
 ## Conventions
 
-- **`config/` is the extension surface; `src/` is the engine.** Skills, hooks, and
-  prompts live in `config/` and are loaded at startup. Adding a capability normally
-  means adding a `config/skills/<name>/` folder — not editing `src/`.
-- **Skills/hooks import the engine as `"yappr"`** (the public API in `src/index.ts`),
-  never via relative `../../../src/...` paths — so a skill is portable to a user's
-  project (no `src/` there) and resolves to the single running engine instance. Node
-  `exports` self-references it: the `development` condition → `src` (dev, hence
-  `tsx --conditions=development`), `default` → `dist` (prod); `tsconfig` `paths`
-  resolves it for typechecking.
-- **Scaffolded config is tracked for updates.** `init` records a hash manifest at
-  `config/.yappr-sync.json`; `yappr update` uses it to fast-forward only the files the
-  user hasn't edited (Debian `.rpmnew`-style), prompting before it ever overwrites a
-  local change. The manifest is dot-prefixed, so the config loader ignores it.
+- **`config/` is the extension surface; `src/` is the engine.** Skills, hooks, and prompts live in `config/` and are loaded at startup. Adding a capability normally means adding a `config/skills/<name>/` folder — not editing `src/`.
+- **Skills/hooks import the engine as `"yappr"`** (the public API in `src/index.ts`), never via relative `../../../src/...` paths — so a skill is portable to a user's project (no `src/` there) and resolves to the single running engine instance. Node `exports` self-references it: the `development` condition → `src` (dev, hence `tsx --conditions=development`), `default` → `dist` (prod); `tsconfig` `paths` resolves it for typechecking.
+- **Scaffolded config is tracked for updates.** `init` records a hash manifest at `config/.yappr-sync.json`; `yappr update` uses it to fast-forward only the files the user hasn't edited (Debian `.rpmnew`-style), prompting before it ever overwrites a local change. The manifest is dot-prefixed, so the config loader ignores it.
 - **All money/identity goes through Bankr** (`src/bankr.ts`). No keys on disk.
-- **`src/x/client.ts` is a deliberately complete SDK.** Not every method is wired to
-  a skill; they're building blocks for skill authors. Keep it that way.
-- **`TREASURY_DRY_RUN=true`** makes every treasury/wallet write a logged no-op — use
-  it to verify cycle logic without spending. `submitTx`/`treasury.*` honor it.
-- **Skill access is enforced in code** (`reply/agent.ts`), never trusted to the LLM:
-  `access: admin` skills only run for handles in `ADMIN_HANDLES`; `access: holder`
-  skills need DB-cached holdings ≥ `min_holding` (`skills/holder-access.ts`, fed by
-  the `holder` hook; admins bypass).
+- **`src/x/client.ts` is a deliberately complete SDK.** Not every method is wired to a skill; they're building blocks for skill authors. Keep it that way.
+- **`TREASURY_DRY_RUN=true`** makes every treasury/wallet write a logged no-op — use it to verify cycle logic without spending. `submitTx`/`treasury.*` honor it.
+- **Skill access is enforced in code** (`reply/agent.ts`), never trusted to the LLM: `access: admin` skills only run for handles in `ADMIN_HANDLES`; `access: holder` skills need DB-cached holdings ≥ `min_holding` (`skills/holder-access.ts`, fed by the `holder` hook; admins bypass).
 - Run `npm run typecheck` after changes.

@@ -4,8 +4,7 @@ description: Read or search tweets and users, post, engage (like/retweet/bookmar
 access: admin
 ---
 
-Pick exactly one `action` from the list below and pass it (plus its parameters)
-in `params` when you call this skill, e.g. `params: {"action":"<action>", ...}`.
+Pick exactly one `action` from the list below and pass it (plus its parameters) in `params` when you call this skill, e.g. `params: {"action":"<action>", ...}`.
 
 Shared parameters:
 - `id` — a tweet, user, list, or community ID. A full X URL also works (e.g. `https://x.com/user/status/123456`); the ID is extracted automatically.
