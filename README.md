@@ -228,7 +228,7 @@ Each skill is a folder containing a `skill.md` and an optional `handler.ts`:
 
 The agent loop calls handler skills as tools, one per turn, seeing each result before deciding the next step. This allows chaining dependent skills (e.g. "search for X and then check my balance").
 
-Copy one of the starter skills (e.g. `config/skills/x/`) to start, or add a new folder. `access: admin` skills are only invocable by handles in `ADMIN_HANDLES`, enforced in code regardless of the LLM's decision. Set `AGENT_MAX_STEPS` (default `6`) to control how many skill calls the loop may make before forcing a reply.
+Copy one of the starter skills (e.g. `config/skills/x-read/`) to start, or add a new folder. `access: admin` skills are only invocable by handles in `ADMIN_HANDLES`, enforced in code regardless of the LLM's decision. Set `AGENT_MAX_STEPS` (default `6`) to control how many skill calls the loop may make before forcing a reply.
 
 ### Calling the LLM from a skill
 
