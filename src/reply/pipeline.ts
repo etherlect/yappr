@@ -1,6 +1,6 @@
 import type { Logger } from "pino";
 import type { Tweet } from "../x/types.js";
-import { getTweets, postReply, tweetImageUrls, uploadMediaFromUrl } from "../x/client.js";
+import { getTweets, postReply, tweetImageUrls } from "../x/client.js";
 import { runAgentLoop } from "./agent.js";
 import {
   runOnMention, runShouldReply, runOnBeforeInference,
@@ -66,8 +66,10 @@ export async function processTweet(t: Tweet, log: Logger): Promise<void> {
       return;
     }
 
-    // Attach any images the skills produced this turn (e.g. generate-image).
-    const mediaIds = await uploadReplyMedia(result.mediaUrls, t.id, log);
+    // Attach any media the model chose for its reply. These are X media_ids a media skill
+    // (chart, generate-image) already uploaded this turn — attached as-is, never forwarded
+    // automatically (the model picks them via the reply's `media_id` field).
+    const mediaIds = result.mediaIds.length ? result.mediaIds.slice(0, 4) : undefined;
     await postReply(t.id, finalText, mediaIds);
     await runOnAfterReply(t, finalText);
     log.info({ id: t.id }, "replied");
@@ -75,23 +77,6 @@ export async function processTweet(t: Tweet, log: Logger): Promise<void> {
   } catch (err) {
     log.error({ err, id: t.id }, "reply failed");
   }
-}
-
-// Upload each image a skill produced this turn to X and return the media_ids to attach
-// to the reply. Best-effort and bounded to X's 4-images-per-tweet limit: a failed upload
-// is logged and skipped so the reply still goes out (as text) rather than failing because
-// one image couldn't be attached.
-async function uploadReplyMedia(urls: string[], tweetId: string, log: Logger): Promise<string[] | undefined> {
-  if (urls.length === 0) return undefined;
-  const ids: string[] = [];
-  for (const url of urls.slice(0, 4)) {
-    try {
-      ids.push(await uploadMediaFromUrl(url));
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), id: tweetId, url }, "reply media upload failed — skipping");
-    }
-  }
-  return ids.length ? ids : undefined;
 }
 
 // Drop duplicate images by URL, keeping the first occurrence (and thus its source

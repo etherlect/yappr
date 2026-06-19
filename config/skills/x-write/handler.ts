@@ -42,11 +42,17 @@ async function uploadMediaUrls(raw?: string): Promise<string[] | undefined> {
 const actions: Record<string, Action> = {
   // ── tweets ──
   "post": async (p) => {
-    if (!p.text) return { text: "missing tweet text" };
-    await postTweet(p.text, {
+    // `media_id`: media already uploaded to X (e.g. from the chart skill's upload mode),
+    // attached as-is. `media_url`: image URLs we upload now. Either lets a post carry an
+    // image, so text is only required when there's no media. Bounded to X's 4-per-tweet.
+    const preUploaded = (p.media_id ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const uploaded = (await uploadMediaUrls(p.media_url)) ?? [];
+    const mediaIds = [...preUploaded, ...uploaded].slice(0, 4);
+    if (!p.text && mediaIds.length === 0) return { text: "missing tweet text (or media to attach)" };
+    await postTweet(p.text ?? "", {
       replyTo: p.reply_to ? extractTweetId(p.reply_to) : undefined,
       quoteTweetId: p.quote_id ? extractTweetId(p.quote_id) : undefined,
-      mediaIds: await uploadMediaUrls(p.media_url),
+      mediaIds: mediaIds.length ? mediaIds : undefined,
     });
     return { text: "posted" };
   },

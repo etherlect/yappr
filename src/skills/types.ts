@@ -4,9 +4,12 @@ import type { Tweet } from "../x/types.js";
 // the model as the "Observation" for that step (see src/reply/agent.ts), which
 // the model then uses to decide the next step or write the final reply.
 export type SkillResult = {
-  text?: string;     // a ready string observation (e.g. "posted", or a short answer)
-  data?: unknown;    // structured data — JSON-stringified into the observation
-  mediaUrl?: string; // image/video URL to attach (requires media support in x/client.ts)
+  text?: string;       // a ready string observation (e.g. "posted", or a short answer)
+  data?: unknown;      // structured data — JSON-stringified into the observation
+  // media_id(s) of images this skill uploaded to X (e.g. chart, generate-image). They are
+  // surfaced to the agent in the observation so it can attach them to its own reply, or
+  // pass them to an x-write post (quote / new tweet / reply elsewhere). NEVER auto-attached.
+  mediaIds?: string[];
 };
 
 export type SkillHandler = (

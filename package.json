@@ -33,6 +33,7 @@
     "dev": "tsx --conditions=development watch src/yappr.ts",
     "start": "node dist/src/yappr.js",
     "build": "tsc",
+    "postbuild": "chmod +x dist/src/cli/index.js",
     "typecheck": "tsc --noEmit",
     "publish:pre": "npm run build && node scripts/publish-pre.mjs",
     "deploy": "tsx src/cli/deploy.ts",

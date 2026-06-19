@@ -1,8 +1,10 @@
-import { payFetch, log, type SkillHandler } from "yappr";
+import { payFetch, log, uploadMediaFromUrl, type SkillHandler } from "yappr";
 
-// Generate an image from a prompt via BlockRun's x402 image gateway, then hand the
-// asker the resulting URL. payFetch signs the EIP-3009 payment on Base automatically
-// (same wallet as every other agent spend), so this module just speaks plain HTTP.
+// Generate image(s) from a prompt via BlockRun's x402 image gateway, upload them to X,
+// and hand the asker the resulting media_id(s). payFetch signs the EIP-3009 payment on
+// Base automatically (same wallet as every other agent spend), so this module just speaks
+// plain HTTP. Nothing is auto-attached: the agent puts the media_id(s) on its reply (or an
+// x-write post). One call can make several images (`n`), each becoming its own media_id.
 
 const ORIGIN = "https://blockrun.ai";
 const ENDPOINT = `${ORIGIN}/api/v1/images/generations`;
@@ -49,21 +51,32 @@ const POLL_MAX_ATTEMPTS = 24; // ~2 min of polling after the inline window
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// BlockRun returns the image under data[0].url on both the inline and the completed-poll
-// responses; absent until the job finishes.
-function imageUrl(body: any): string | undefined {
-  return body?.data?.[0]?.url;
+// BlockRun returns the image(s) under data[*].url on both the inline and the completed-
+// poll responses; the array is empty until the job finishes.
+function imageUrls(body: any): string[] {
+  return (body?.data ?? []).map((d: any) => d?.url).filter((u: any): u is string => typeof u === "string");
 }
 
-// Returned as `mediaUrl` on success: the reply pipeline uploads it to X and attaches it
-// to the reply, so the model should caption the image rather than paste a URL.
-const GENERATED_NOTE =
-  "Image generated — it will be attached to your reply automatically. Write a short caption for it and do NOT include any URL in your reply.";
+// Upload each generated image URL to X and return its media_id. Best-effort: a failed
+// upload is logged and skipped so the others still go through.
+async function uploadToX(urls: string[]): Promise<string[]> {
+  const ids: string[] = [];
+  for (const url of urls) {
+    try {
+      ids.push(await uploadMediaFromUrl(url));
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err), url }, "generate-image: X upload failed — skipping");
+    }
+  }
+  return ids;
+}
 
 export const handler: SkillHandler = async (params) => {
   const prompt = (params.prompt ?? "").trim();
   if (!prompt) return { text: "missing prompt — describe the image to generate" };
   const size = resolveSize(params.size ?? params.orientation);
+  // How many images to make in one call (1–4, the X per-tweet limit). Default 1.
+  const n = Math.min(4, Math.max(1, Math.trunc(Number(params.n ?? params.count ?? "1")) || 1));
 
   // 1) Kick off generation. The server holds the request inline for up to ~30s: if the
   // image is ready it comes back directly, otherwise we get a queued job to poll.
@@ -72,7 +85,7 @@ export const handler: SkillHandler = async (params) => {
     const res = await payFetch(ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, model: MODEL, size }),
+      body: JSON.stringify({ prompt, model: MODEL, size, n }),
       signal: AbortSignal.timeout(POST_TIMEOUT_MS),
     });
     if (!res.ok) {
@@ -86,48 +99,52 @@ export const handler: SkillHandler = async (params) => {
     return { text: "image generation failed — the request errored before any image was produced" };
   }
 
-  // 2a) Fast path — the image came back inline within the 30s window.
-  const inline = imageUrl(body);
-  if (inline) {
-    log.info({ model: MODEL, size, url: inline }, "generate-image: inline result");
-    return { text: GENERATED_NOTE, mediaUrl: inline };
-  }
-
-  // 2b) Slow path — poll the job until it completes. payFetch re-signs the poll's x402
-  // challenge each time; BlockRun only settles the charge on the first completed poll
-  // (the unused authorizations for in-progress polls are never submitted on-chain), so
-  // polling does not double-bill. The poll must come from the same wallet as the POST,
-  // which it always does (one agent wallet).
-  const pollPath = body?.poll_url as string | undefined;
-  if (!pollPath) {
-    log.warn({ body }, "generate-image: no image and no poll_url to follow");
-    return { text: "image generation failed — no image and no job to poll" };
-  }
-  const pollUrl = new URL(pollPath, ORIGIN).toString();
-  log.info({ jobId: body?.id, status: body?.status, size, pollUrl }, "generate-image: job queued, polling");
-
-  for (let attempt = 1; attempt <= POLL_MAX_ATTEMPTS; attempt++) {
-    await sleep(POLL_INTERVAL_MS);
-    try {
-      const pr = await payFetch(pollUrl, { method: "GET", signal: AbortSignal.timeout(POLL_TIMEOUT_MS) });
-      const pb: any = await pr.json().catch(() => null);
-      const url = imageUrl(pb);
-      if (url) {
-        log.info({ attempt, url }, "generate-image: completed");
-        return { text: GENERATED_NOTE, mediaUrl: url };
+  // 2) Resolve the image URL(s) — inline within the 30s window, else poll the job.
+  let urls = imageUrls(body);
+  if (urls.length === 0) {
+    // Slow path — poll the job until it completes. payFetch re-signs the poll's x402
+    // challenge each time; BlockRun only settles the charge on the first completed poll
+    // (the unused authorizations for in-progress polls are never submitted on-chain), so
+    // polling does not double-bill. The poll comes from the same wallet as the POST.
+    const pollPath = body?.poll_url as string | undefined;
+    if (!pollPath) {
+      log.warn({ body }, "generate-image: no image and no poll_url to follow");
+      return { text: "image generation failed — no image and no job to poll" };
+    }
+    const pollUrl = new URL(pollPath, ORIGIN).toString();
+    log.info({ jobId: body?.id, status: body?.status, size, n, pollUrl }, "generate-image: job queued, polling");
+    for (let attempt = 1; attempt <= POLL_MAX_ATTEMPTS && urls.length === 0; attempt++) {
+      await sleep(POLL_INTERVAL_MS);
+      try {
+        const pr = await payFetch(pollUrl, { method: "GET", signal: AbortSignal.timeout(POLL_TIMEOUT_MS) });
+        const pb: any = await pr.json().catch(() => null);
+        urls = imageUrls(pb);
+        if (urls.length) { log.info({ attempt, count: urls.length }, "generate-image: completed"); break; }
+        if (pb?.status === "failed") {
+          log.warn({ attempt, body: pb }, "generate-image: job reported failed");
+          return { text: "image generation failed while processing the job" };
+        }
+        log.info({ attempt, status: pb?.status }, "generate-image: still generating");
+      } catch (err) {
+        // A transient poll error (timeout/network) shouldn't abort — the job may still
+        // finish, so log and try the next tick.
+        log.warn({ attempt, err: err instanceof Error ? err.message : String(err) }, "generate-image: poll errored — retrying");
       }
-      if (pb?.status === "failed") {
-        log.warn({ attempt, body: pb }, "generate-image: job reported failed");
-        return { text: "image generation failed while processing the job" };
-      }
-      log.info({ attempt, status: pb?.status }, "generate-image: still generating");
-    } catch (err) {
-      // A transient poll error (timeout/network) shouldn't abort — the job may still
-      // finish, so log and try the next tick.
-      log.warn({ attempt, err: err instanceof Error ? err.message : String(err) }, "generate-image: poll errored — retrying");
+    }
+    if (urls.length === 0) {
+      log.warn({ jobId: body?.id }, "generate-image: polling exhausted before completion");
+      return { text: "image generation timed out — the job did not finish in time, try again" };
     }
   }
 
-  log.warn({ jobId: body?.id }, "generate-image: polling exhausted before completion");
-  return { text: "image generation timed out — the job did not finish in time, try again" };
+  // 3) Upload the generated image(s) to X and hand the media_id(s) back to the agent.
+  const mediaIds = await uploadToX(urls);
+  if (mediaIds.length === 0) {
+    return { text: "image(s) were generated but uploading them to X failed — tell the asker it couldn't be posted, try again." };
+  }
+  log.info({ model: MODEL, size, count: mediaIds.length }, "generate-image: uploaded to X");
+  return {
+    text: `Generated and uploaded ${mediaIds.length} image(s) for "${prompt.slice(0, 80)}". Write a short caption and attach them to your reply (no URLs).`,
+    mediaIds,
+  };
 };
