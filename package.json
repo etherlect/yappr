@@ -2,7 +2,7 @@
   "name": "yappr",
   "version": "0.1.0",
   "type": "module",
-  "description": "Self-sustaining x402 X/Twitter reply agent — forkable, Bankr-wallet-powered, economically autonomous",
+  "description": "pre-publish",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "bin": {
@@ -25,8 +25,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-org/yappr"
+    "url": "git+https://github.com/etherlect/yappr.git"
   },
+  "homepage": "https://github.com/etherlect/yappr#readme",
+  "bugs": "https://github.com/etherlect/yappr/issues",
   "scripts": {
     "dev": "tsx --conditions=development watch src/yappr.ts",
     "start": "node dist/src/yappr.js",
