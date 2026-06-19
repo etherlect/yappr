@@ -761,11 +761,20 @@ export async function runStatus(target: { ip: string; password?: string; handle?
     return;
   }
 
+  // Bound the SSH connect so a destroyed/black-holed instance fails fast with a clear
+  // diagnosis instead of hanging on the OS TCP timeout (the "nothing happens" symptom
+  // when the cached COMPUTE_HOST no longer points at a live box).
+  const CONNECT_TIMEOUT_MS = 12_000;
+  process.stdout.write(`  Connecting to root@${target.ip}…\n`);
   const ssh = new NodeSSH();
   try {
-    await ssh.connect({ host: target.ip, username: "root", password: target.password, tryKeyboard: true, ...hostKeyConfig(target.ip) });
+    await withTimeout(
+      ssh.connect({ host: target.ip, username: "root", password: target.password, tryKeyboard: true, readyTimeout: CONNECT_TIMEOUT_MS, ...hostKeyConfig(target.ip) }),
+      CONNECT_TIMEOUT_MS + 3_000,
+    );
   } catch (err) {
-    console.error(`  Could not connect to root@${target.ip}: ${err instanceof Error ? err.message : String(err)}`);
+    try { ssh.dispose(); } catch { /* ignore */ }
+    await reportUnreachable(target.ip, err);
     return;
   }
 
@@ -1071,6 +1080,47 @@ async function resolveTarget(instanceIdArg?: string): Promise<{ ip: string; pass
   let password = computeInstancePassword(instance) || cachedPw || undefined;
   if (!password) password = await fetchOneTimePassword(apiKey, address, instanceId);
   return { ip, password, handle };
+}
+
+// When the cached COMPUTE_HOST can't be reached, the instance was most likely destroyed
+// or its IP recycled. If we have API creds, confirm against the compute API and say
+// precisely what's wrong (gone / IP changed / expired / SSH-only); otherwise give the
+// generic stale-cache guidance. Turns the old silent TCP hang into an actionable message.
+async function reportUnreachable(ip: string, err: unknown): Promise<void> {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(`\n  ${red("x")}  Could not reach root@${ip} (${msg}).`);
+
+  const apiKey = process.env.BANKR_API_KEY;
+  const instanceId = process.env.COMPUTE_INSTANCE_ID;
+  if (apiKey && instanceId) {
+    process.stdout.write(`     ${dim("checking the compute instance status…")}\n`);
+    try {
+      const address = await withTimeout(resolveEvmAddress(apiKey), 8_000);
+      const instance = await withTimeout(fetchComputeInstance(apiKey, address, instanceId), 8_000);
+      const liveIp = computeInstanceIp(instance);
+      const hours = remainingComputeHours(instance);
+      if (!liveIp) {
+        console.error(`     Instance ${instanceId} has no IP — it looks destroyed or deprovisioned.`);
+      } else if (liveIp !== ip) {
+        console.error(`     Instance IP changed: ${ip} ${dim("(cached)")} → ${cyan(liveIp)} ${dim("(live)")}.`);
+        console.error(`     ${yellow("COMPUTE_HOST in .env is stale")} — set it to ${liveIp}, or redeploy.`);
+      } else if (hours != null && hours <= 0) {
+        console.error(`     Instance ${instanceId} has expired — its compute ran out.`);
+      } else {
+        console.error(`     Instance is registered (IP ${liveIp}) but SSH is unreachable — it may be rebooting or firewalled.`);
+      }
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      if (/\b404\b|not found/i.test(m)) {
+        console.error(`     The compute API no longer recognizes instance ${instanceId} — it was destroyed.`);
+      } else {
+        console.error(`     Couldn't confirm the instance status (${dim(m)}).`);
+      }
+    }
+  } else {
+    console.error(`     COMPUTE_HOST is probably stale (the instance was destroyed or its IP changed).`);
+  }
+  console.error(`\n  ${accent("→")}  Provision a fresh box with ${cyan("npx yappr deploy")}, or fix COMPUTE_HOST / COMPUTE_INSTANCE_ID in .env.\n`);
 }
 
 // Render one frame with mock data — for eyeballing the layout without a server:
