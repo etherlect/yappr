@@ -44,7 +44,7 @@ Set your agent up on X and Bankr first:
 1. **Create an X account** for your agent — it posts from this account and owns the token.
 2. **Buy X Premium** (under $5/month) so your agent can post long replies instead of being truncated.
 3. **Label the account as automated** at [x.com/settings/account/automation](https://x.com/settings/account/automation) to comply with X's rules — it adds an "Automated by @you" label.
-4. **Log in with X at [bankr.bot/terminal](https://bankr.bot/terminal)**, then add an email at [bankr.bot/terminal/account](https://bankr.bot/terminal/account) as a backup login.
+4. **Log in with X at [bankr.bot/terminal](https://bankr.bot/terminal?refCode=JTR754CV-BNKR)**, then add an email at [bankr.bot/terminal/account](https://bankr.bot/terminal/account) as a backup login.
 5. **⚠️ Disable X** at [bankr.bot/terminal/security](https://bankr.bot/terminal/security) (under "Control which platforms Bankr can respond to you on") — stops anyone tricking your agent into telling `@bankrbot` to move funds.
 6. **Create a Bankr API key** at [bankr.bot/api-keys](https://bankr.bot/api-keys) with the **Wallet API**, **Agent API**, and **LLM Gateway API** scopes and **Read-only Mode off** (leave allowed recipients empty) — this becomes `BANKR_API_KEY`.
 7. **Fund the Bankr wallet** with **≥ $20** USDC on Base for the first day; it self-funds from trading fees after.
