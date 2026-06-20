@@ -18,6 +18,14 @@ function burnedPctOfSupply(tokensBurned: number): number {
   return pct >= 1 ? Number(pct.toFixed(1)) : Number(pct.toPrecision(2));
 }
 
+// Abbreviate a token balance for display: 2,452,720 → "2.5M", 1,200 → "1.2K", 940 → "940".
+function abbreviateTokens(n: number): string {
+  for (const [base, suffix] of [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]] as const) {
+    if (n >= base) return `${(n / base).toFixed(1).replace(/\.0$/, "")}${suffix}`;
+  }
+  return n.toFixed(0);
+}
+
 function fmtDuration(hours: number): string {
   if (!Number.isFinite(hours)) return "∞";
   if (hours < 1) return `${Math.round(hours * 60)}m`;
@@ -40,14 +48,45 @@ export const handler: SkillHandler = async () => {
     : predictedUsdcBurn;
   const llmBurn = hasRate ? s.inferenceUsdWindow / s.rateWindowHours : 0;
 
-  // Treasury value per tank: the USDC balance (live, on-chain) and the LLM credit balance.
+  // Live, on-chain treasury reads (best-effort, independent via allSettled so one failing
+  // keeps the other): the USDC balance for the runway, and the exact tokens burned to date,
+  // read straight from the burn address — ground truth, with the stats ledger's tokenBurned
+  // as the fallback. Then the LLM credit balance for the inference tank.
   let usdcUsd: number | null = null;
-  try {
-    usdcUsd = Number((await getTreasury().balances()).usdc) / 1e6;
-  } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err) }, "stats: balances fetch failed");
+  let tokenBurned = s.tokenBurned;
+  let balances: { token: bigint; weth: bigint; usdc: bigint; eth: bigint } | null = null;
+  let tokenSymbol = "TOKEN";
+  {
+    const treasury = getTreasury();
+    const [balRes, burnRes, symRes] = await Promise.allSettled([
+      treasury.balances(), treasury.tokensBurned(), treasury.tokenSymbol(),
+    ]);
+    if (balRes.status === "fulfilled") { balances = balRes.value; usdcUsd = Number(balances.usdc) / 1e6; }
+    else log.warn({ err: String(balRes.reason) }, "stats: balances fetch failed");
+    if (burnRes.status === "fulfilled") tokenBurned = burnRes.value;
+    else log.warn({ err: String(burnRes.reason) }, "stats: on-chain burned read failed — using ledger total");
+    if (symRes.status === "fulfilled") tokenSymbol = symRes.value;
+    else log.warn({ err: String(symRes.reason) }, "stats: token symbol read failed");
   }
   const creditUsd = await llmCreditBalance();
+
+  // Treasury holdings, one line: USDC, agent token, WETH, ETH, LLM credits — each segment
+  // dropped when its balance is 0 (and the whole line null if nothing's known). ETH/WETH to
+  // 3 decimals, the token abbreviated (e.g. "2.4M YAPPR"), credits in USD. (token/weth/eth
+  // are 18-decimals, usdc 6 — converted by plain division so the handler needs no viem.)
+  const treasuryParts: string[] = [];
+  if (balances) {
+    const usdc = Number(balances.usdc) / 1e6;
+    const token = Number(balances.token) / 1e18;
+    const weth = Number(balances.weth) / 1e18;
+    const eth = Number(balances.eth) / 1e18;
+    if (usdc > 0) treasuryParts.push(`${usdc.toFixed(2)} USDC`);
+    if (token > 0) treasuryParts.push(`${abbreviateTokens(token)} ${tokenSymbol}`);
+    if (weth > 0) treasuryParts.push(`${weth.toFixed(3)} WETH`);
+    if (eth > 0) treasuryParts.push(`${eth.toFixed(3)} ETH`);
+  }
+  if (creditUsd != null && creditUsd > 0) treasuryParts.push(`$${creditUsd.toFixed(2)} LLM credits`);
+  const treasuryLine = treasuryParts.length > 0 ? treasuryParts.join(", ") : null;
 
   const usdcRunwayH = usdcBurn > 0 ? (usdcUsd != null ? usdcUsd / usdcBurn : Infinity) : Infinity;
   const llmRunwayH = llmBurn > 0 ? (creditUsd != null ? creditUsd / llmBurn : Infinity) : Infinity;
@@ -86,8 +125,9 @@ export const handler: SkillHandler = async () => {
       },
       earnedWeth: s.earnedWeth, // lifetime gross creator fees, in ETH/WETH
       devWeth: s.devWeth, // dev cut within earnedWeth
-      tokenBurned: s.tokenBurned, // lifetime agent tokens burned (BURN_BPS of claimed fees), in token units
-      tokenBurnedPctOfSupply: burnedPctOfSupply(s.tokenBurned), // burned as a % of the fixed 100B supply
+      tokenBurned, // exact tokens burned to date, read live on-chain from the burn address
+      tokenBurnedPctOfSupply: burnedPctOfSupply(tokenBurned), // burned as a % of the fixed 100B supply
+      treasury: treasuryLine, // ready-to-show holdings line (null when no balance is known)
       runway,
     },
   };

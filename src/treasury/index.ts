@@ -1,4 +1,4 @@
-import { encodeFunctionData, createPublicClient, http } from "viem";
+import { encodeFunctionData, createPublicClient, http, formatUnits } from "viem";
 import { base } from "viem/chains";
 import { submitTx, walletAddress, payFetch, paidUsd } from "../wallet.js";
 import { bankrApi } from "../bankr.js";
@@ -22,6 +22,11 @@ export interface Treasury {
   computeExpiry(): Promise<Date | null>;
   balances(): Promise<TreasuryBalances>;
   lifetimeEarned(): Promise<number>;
+  // Exact tokens burned to date, read live from the burn address (0x…dead) balance — the
+  // on-chain ground truth, returned as a human-readable amount (token is 18-decimals).
+  tokensBurned(): Promise<number>;
+  // The agent token's ERC-20 ticker (e.g. "YAPPR"). Immutable, so cached after first read.
+  tokenSymbol(): Promise<string>;
 }
 
 const UNISWAP_ROUTER = "0x2626664c2603336E57B271c5C0b26F421741e481" as `0x${string}`;
@@ -80,6 +85,8 @@ async function readWithRetry<T>(step: string, fn: () => Promise<T>): Promise<T> 
 }
 
 let _treasury: Treasury | null = null;
+// Cached agent-token ticker — immutable on-chain, so read at most once per process.
+let _tokenSymbol: string | null = null;
 
 export function getTreasury(): Treasury {
   if (!_treasury) _treasury = createBankrTreasury();
@@ -284,6 +291,24 @@ export function createBankrTreasury(): Treasury {
         publicClient.getBalance({ address }),
       ]));
       return { token, weth, usdc, eth };
+    },
+
+    // Exact tokens burned to date = the agent token sitting at the burn address. On-chain
+    // ground truth (vs the stats ledger's sum of burns this agent itself recorded), read-
+    // only and retried. Token is 18-decimals, like the rest of the treasury's token math.
+    async tokensBurned() {
+      const burned = await readWithRetry("tokensBurned", () => erc20Balance(config.tokenAddress, BURN_ADDRESS));
+      return Number(formatUnits(burned, 18));
+    },
+
+    // The agent token's ticker, read once from the contract and cached (it never changes).
+    async tokenSymbol() {
+      if (_tokenSymbol === null) {
+        _tokenSymbol = await readWithRetry("tokenSymbol", () => publicClient.readContract({
+          address: config.tokenAddress, abi: ERC20_ABI, functionName: "symbol",
+        })) as string;
+      }
+      return _tokenSymbol;
     },
   };
 }

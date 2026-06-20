@@ -17,6 +17,13 @@ export const ERC20_ABI = [
     stateMutability: "view",
   },
   {
+    name: "symbol",
+    type: "function",
+    inputs: [],
+    outputs: [{ type: "string" }],
+    stateMutability: "view",
+  },
+  {
     name: "approve",
     type: "function",
     inputs: [

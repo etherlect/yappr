@@ -9,7 +9,8 @@ Returns the agent's lifetime metrics from its own ledger, plus a live runway est
 - `mentions`, `replies`, `llmCalls` — lifetime counts.
 - `spentUsd` — total USD spent, with `spentByType` broken out into `inference`, `compute` and `x402`. X-data spend is already folded into `x402` — there is no separate `x-api` figure, so report only `x402`.
 - `earnedWeth` — lifetime gross creator fees, in **ETH/WETH**; `devWeth` is the dev cut within it.
-- `tokenBurned` — lifetime agent tokens burned (the `BURN_BPS` share of claimed fees), in **token units**. `tokenBurnedPctOfSupply` is that as a percentage of total supply — always show it alongside the burned amount, e.g. `Burned: 1.2M tokens (3.4% of supply)`.
+- `tokenBurned` — total agent tokens burned to date, read **live on-chain** from the burn address, in **token units**. `tokenBurnedPctOfSupply` is that as a percentage of total supply — always show it alongside the burned amount, e.g. `Burned: 1.2M tokens (3.4% of supply)`.
+- `treasury` — a ready-to-show string of the agent's current holdings (USDC, the agent token, WETH, ETH, LLM credits), already formatted with zero balances skipped — e.g. `"12.50 USDC, 2.4M YAPPR, 0.030 WETH, 0.005 ETH, $4.20 LLM credits"`. Show it verbatim on a `- Treasury:` line. `null` when no balance could be read — omit the line then.
 - `runway` — how long the treasury lasts at the current burn (ignores incoming earnings):
   - `human` — a ready string like `"12.5d"`, `"8.0h"`, or `"∞"`; plus `hours` and `days` numbers (both `null` when effectively infinite).
   - `estimated: true` — a cold-start estimate (not enough recorded burn yet); say "roughly".
@@ -30,5 +31,8 @@ Example full-stats reply:
 - x402: $4.30
 - Earned: 0.12 ETH
 - Burned: 1.2M tokens (1.2% of supply)
+- Treasury: 12.50 USDC, 2.4M YAPPR, 0.030 WETH, 0.005 ETH, $4.20 LLM credits
 - Runway: ~12.5d
 ```
+
+The `treasury` line is already formatted — print it as-is after `- Treasury: `, don't reformat or drop any of its segments.
