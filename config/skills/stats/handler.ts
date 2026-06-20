@@ -1,4 +1,4 @@
-import { summary, getTreasury, llmCreditBalance, log, type SkillHandler } from "yappr";
+import { summary, dailyStats, getTreasury, llmCreditBalance, log, type SkillHandler, type SpendType } from "yappr";
 
 // stats: the agent's all-time metrics from its own ledger, plus a runway estimate (how
 // long the treasury lasts at the current burn). The runway mirrors the status dashboard's
@@ -33,8 +33,19 @@ function fmtDuration(hours: number): string {
   return `${(hours / 24).toFixed(1)}d`;
 }
 
+// Public spend breakdown: fold X-data (x-api) into x402 so the reply only ever shows a
+// single x402 figure, never the internal x-api/x402 split. Rounded for display.
+function publicSpendByType(byType: Record<SpendType, number>) {
+  return {
+    inference: Number(byType.inference.toFixed(4)),
+    compute: Number(byType.compute.toFixed(4)),
+    x402: Number((byType.x402 + byType["x-api"]).toFixed(4)),
+  };
+}
+
 export const handler: SkillHandler = async () => {
   const s = summary();
+  const day = dailyStats(); // trailing-24h rollup from the same ledger
 
   // Burn rates from the trailing window. usdcBurn = x-api+compute+x402 (total minus the
   // inference slice), floored at the always-on poll cost so downtime can't inflate runway;
@@ -108,27 +119,36 @@ export const handler: SkillHandler = async () => {
         llmBurnUsdPerHour: Number(llmBurn.toFixed(4)),
       };
 
+  // Three groups: `daily` (last 24h activity), `allTime` (lifetime totals), and `balance`
+  // (current holdings + forward-looking runway). warns/errors are deliberately omitted from
+  // both rollups — internal health metrics, not user-facing (kept in summary() for the
+  // admin dashboard). x-api is folded into x402 in every spentByType (publicSpendByType).
   return {
     data: {
-      mentions: s.mentions,
-      replies: s.replies,
-      llmCalls: s.llm,
-      // warns/errors are deliberately omitted — internal health metrics, not user-facing
-      // (and this skill is public). They stay in summary() for the admin status dashboard.
-      spentUsd: Number(s.spentUsd.toFixed(4)),
-      // X-data (x-api) spend is folded into x402 here, so the public reply reports a single
-      // x402 figure — never the internal x-api/x402 split. Total `spentUsd` is unchanged.
-      spentByType: {
-        inference: Number(s.spentByType.inference.toFixed(4)),
-        compute: Number(s.spentByType.compute.toFixed(4)),
-        x402: Number((s.spentByType.x402 + s.spentByType["x-api"]).toFixed(4)),
+      daily: {
+        mentions: day.mentions,
+        replies: day.replies,
+        llmCalls: day.llmCalls,
+        spentUsd: Number(day.spentUsd.toFixed(4)),
+        spentByType: publicSpendByType(day.spentByType),
+        earnedWeth: day.earnedWeth, // gross creator fees in the last 24h, ETH/WETH
+        tokenBurned: day.tokenBurned, // tokens burned in the last 24h (ledger-recorded burns)
       },
-      earnedWeth: s.earnedWeth, // lifetime gross creator fees, in ETH/WETH
-      devWeth: s.devWeth, // dev cut within earnedWeth
-      tokenBurned, // exact tokens burned to date, read live on-chain from the burn address
-      tokenBurnedPctOfSupply: burnedPctOfSupply(tokenBurned), // burned as a % of the fixed 100B supply
-      treasury: treasuryLine, // ready-to-show holdings line (null when no balance is known)
-      runway,
+      allTime: {
+        mentions: s.mentions,
+        replies: s.replies,
+        llmCalls: s.llm,
+        spentUsd: Number(s.spentUsd.toFixed(4)),
+        spentByType: publicSpendByType(s.spentByType),
+        earnedWeth: s.earnedWeth, // lifetime gross creator fees, in ETH/WETH
+        devWeth: s.devWeth, // dev cut within earnedWeth
+        tokenBurned, // exact tokens burned to date, read live on-chain from the burn address
+        tokenBurnedPctOfSupply: burnedPctOfSupply(tokenBurned), // burned as a % of the fixed 100B supply
+      },
+      balance: {
+        treasury: treasuryLine, // ready-to-show holdings line (null when no balance is known)
+        runway,
+      },
     },
   };
 };

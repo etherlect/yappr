@@ -35,8 +35,8 @@ export type { ChatMessage, ContentPart } from "./llm/index.js";
 
 // ── Stats — read the agent's ledger: lifetime counters, spend by type, earnings, and
 // the trailing-window burn figures behind a runway estimate ──
-export { summary } from "./stats.js";
-export type { Summary, SpendType } from "./stats.js";
+export { summary, dailyStats } from "./stats.js";
+export type { Summary, DailyStats, SpendType } from "./stats.js";
 
 // ── Holder gate — the code-side check behind `access: holder` skills, exported
 // so skill handlers can apply finer-grained holding tiers themselves ──

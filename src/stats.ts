@@ -59,6 +59,9 @@ type ChartSeries = { spendUsd: number[]; earnedWeth: number[]; startMs: number; 
 
 // Trailing window used to estimate the current burn/earn rate for runway (24h).
 const RATE_WINDOW_MS = 24 * 60 * 60 * 1000;
+// Trailing window for the "last 24h" rollup (dailyStats). Kept separate from the runway
+// window above so tuning one never silently moves the other.
+const DAY_MS = 24 * 60 * 60 * 1000;
 // Resolution of the dashboard chart series (points across the 24h window).
 const CHART_BUCKETS = 120;
 
@@ -303,6 +306,53 @@ export function summary(): Summary {
       spentUsdWindow: win.spentUsdWindow, inferenceUsdWindow: win.inferenceUsdWindow,
       earnedWethWindow: win.earnedWethWindow, rateWindowHours,
       chart: { day, byType },
+    };
+  } catch {
+    return empty;
+  }
+}
+
+// Trailing-24h rollup from the events ledger — the same activity/spend/earn figures as
+// summary()'s lifetime totals, but filtered to the last DAY_MS. Powers the stats skill's
+// "last 24h" section. `tokenBurned` here is the ledger sum of burns recorded in the window
+// (summary()/the skill report all-time burned from on-chain instead).
+export type DailyStats = {
+  mentions: number;
+  replies: number;
+  llmCalls: number;
+  spentUsd: number;
+  spentByType: Record<SpendType, number>;
+  earnedWeth: number;
+  tokenBurned: number;
+};
+
+export function dailyStats(): DailyStats {
+  const empty: DailyStats = {
+    mentions: 0, replies: 0, llmCalls: 0, spentUsd: 0,
+    spentByType: { "x-api": 0, compute: 0, inference: 0, x402: 0 }, earnedWeth: 0, tokenBurned: 0,
+  };
+  const d = conn();
+  if (!d) return empty;
+  try {
+    const since = new Date(Date.now() - DAY_MS).toISOString();
+    const agg = d.prepare(`
+      SELECT
+        COALESCE(SUM(n)     FILTER (WHERE kind = 'mention'), 0) AS mentions,
+        COUNT(*)            FILTER (WHERE kind = 'reply')       AS replies,
+        COUNT(*)            FILTER (WHERE kind = 'llm')         AS llmCalls,
+        COALESCE(SUM(usdc)  FILTER (WHERE kind = 'spend'),  0)  AS spentUsd,
+        COALESCE(SUM(weth)  FILTER (WHERE kind = 'earned'), 0)  AS earnedWeth,
+        COALESCE(SUM(token) FILTER (WHERE kind = 'burn'),   0)  AS tokenBurned
+      FROM events WHERE ts >= ?
+    `).get(since) as Record<string, number>;
+    const spentByType: Record<SpendType, number> = { "x-api": 0, compute: 0, inference: 0, x402: 0 };
+    const rows = d.prepare(
+      "SELECT type, COALESCE(SUM(usdc), 0) AS u FROM events WHERE kind = 'spend' AND ts >= ? GROUP BY type",
+    ).all(since) as Array<{ type: SpendType | null; u: number }>;
+    for (const r of rows) if (r.type && r.type in spentByType) spentByType[r.type] = r.u;
+    return {
+      mentions: agg.mentions, replies: agg.replies, llmCalls: agg.llmCalls,
+      spentUsd: agg.spentUsd, spentByType, earnedWeth: agg.earnedWeth, tokenBurned: agg.tokenBurned,
     };
   } catch {
     return empty;
