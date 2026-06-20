@@ -7,6 +7,16 @@ import { summary, getTreasury, llmCreditBalance, log, type SkillHandler } from "
 
 const RUNWAY_MIN_DATA_HOURS = 1; // trust the measured burn only after this much recorded window
 const X_API_POLL_COST_USD = 0.005; // always-on mentions-poll cost — the cold-start/floor burn
+// Every Bankr/Clanker launch ships a fixed 100B supply, so burned-% is computed against
+// this constant rather than fetched (same assumption as the status dashboard, cli/status.ts).
+const TOKEN_TOTAL_SUPPLY = 100_000_000_000;
+
+// Tokens burned as a % of total supply, matching the dashboard's precision: 1 decimal once
+// past 1%, else 2 significant figures so early burns (e.g. 0.0025%) still show.
+function burnedPctOfSupply(tokensBurned: number): number {
+  const pct = (tokensBurned / TOKEN_TOTAL_SUPPLY) * 100;
+  return pct >= 1 ? Number(pct.toFixed(1)) : Number(pct.toPrecision(2));
+}
 
 function fmtDuration(hours: number): string {
   if (!Number.isFinite(hours)) return "∞";
@@ -67,9 +77,17 @@ export const handler: SkillHandler = async () => {
       // warns/errors are deliberately omitted — internal health metrics, not user-facing
       // (and this skill is public). They stay in summary() for the admin status dashboard.
       spentUsd: Number(s.spentUsd.toFixed(4)),
-      spentByType: s.spentByType, // { "x-api", inference, compute, x402 }
+      // X-data (x-api) spend is folded into x402 here, so the public reply reports a single
+      // x402 figure — never the internal x-api/x402 split. Total `spentUsd` is unchanged.
+      spentByType: {
+        inference: Number(s.spentByType.inference.toFixed(4)),
+        compute: Number(s.spentByType.compute.toFixed(4)),
+        x402: Number((s.spentByType.x402 + s.spentByType["x-api"]).toFixed(4)),
+      },
       earnedWeth: s.earnedWeth, // lifetime gross creator fees, in ETH/WETH
       devWeth: s.devWeth, // dev cut within earnedWeth
+      tokenBurned: s.tokenBurned, // lifetime agent tokens burned (BURN_BPS of claimed fees), in token units
+      tokenBurnedPctOfSupply: burnedPctOfSupply(s.tokenBurned), // burned as a % of the fixed 100B supply
       runway,
     },
   };

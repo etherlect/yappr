@@ -5,7 +5,7 @@ import {
 } from "../hooks/registry.js";
 import { type Treasury, WETH } from "./index.js";
 import { formatUnits } from "viem";
-import { recordDevWeth } from "../stats.js";
+import { recordDevWeth, recordTokenBurned } from "../stats.js";
 
 // The self-funding loop, run on a timer (TREASURY_INTERVAL_MS). Each cycle:
 // claim fees → pay optional dev cut → burn a share of the token → keep a small ETH
@@ -123,6 +123,7 @@ export async function runTreasuryCycle(treasury: Treasury, log: Logger): Promise
         const txHash = await treasury.burnToken(burnAmount);
         result.tokenBurned = burnAmount;
         result.txHashes.push(txHash);
+        recordTokenBurned(Number(formatUnits(burnAmount, 18))); // track cumulative tokens burned
         log.info({ burnAmount: burnAmount.toString(), txHash }, "token burned");
       }
     }

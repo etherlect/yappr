@@ -4,9 +4,11 @@ import { withSchema } from "./db.js";
 // (see db.ts) so it's cleanly queryable (by time, type, cumulative …) and sits
 // alongside whatever other tables get added later.
 //
-//   events(id, ts, kind, type, usdc, weth, n)   one row per counted thing. `ts` is
-//     ISO-8601, so date/hour bucketing and running-sum (cumulative) charts are plain
-//     SQL. kinds: spend | earned | dev | mention | reply | llm | warn | error.
+//   events(id, ts, kind, type, usdc, weth, token, n)   one row per counted thing. `ts`
+//     is ISO-8601, so date/hour bucketing and running-sum (cumulative) charts are plain
+//     SQL. kinds: spend | earned | dev | burn | mention | reply | llm | warn | error.
+//     Numeric columns carry a per-kind amount: usdc (spend USD), weth (earned/dev WETH),
+//     token (burn — agent tokens burned), n (mention count).
 //   meta(key, value)                            gauges/bookkeeping that aren't events:
 //     last_earned_weth (earnings baseline) — used to turn an absolute cumulative
 //     reading into the increment appended as an `earned` event.
@@ -29,6 +31,9 @@ export type Summary = {
   // All-time WETH paid out to the dev address (dev fee), cumulative — a breakdown of
   // `earnedWeth` (already included in it), surfaced on its own as "Dev rev".
   devWeth: number;
+  // All-time agent tokens burned (BURN_BPS of claimed token fees), cumulative — summed
+  // from the `burn` events booked each treasury cycle. In token units, not USD/WETH.
+  tokenBurned: number;
   // Trailing-window figures for the runway estimate (see status dashboard). The window
   // is the last RATE_WINDOW_MS, clamped to the agent's age. `spentUsdWindow` is total USD
   // spend; `inferenceUsdWindow` is the LLM (credit-funded) slice of it, so the USDC-funded
@@ -66,24 +71,39 @@ const SCHEMA = `
     type  TEXT,
     usdc  REAL,
     weth  REAL,
+    token REAL,
     n     INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_events_ts   ON events(ts);
   CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value REAL);
 `;
-const conn = () => withSchema(SCHEMA);
+
+// `token` was added after the first releases, and CREATE TABLE IF NOT EXISTS won't add a
+// column to an already-present table — so back-fill it on older DBs. Memoised, best-effort.
+let columnsEnsured = false;
+function conn(): ReturnType<typeof withSchema> {
+  const d = withSchema(SCHEMA);
+  if (d && !columnsEnsured) {
+    try {
+      const cols = d.prepare("PRAGMA table_info(events)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === "token")) d.exec("ALTER TABLE events ADD COLUMN token REAL");
+      columnsEnsured = true;
+    } catch { /* best-effort — degrade to no-ops */ }
+  }
+  return d;
+}
 
 const now = () => new Date().toISOString();
 
-type EventRow = { kind: string; type?: SpendType | null; usdc?: number | null; weth?: number | null; n?: number | null };
+type EventRow = { kind: string; type?: SpendType | null; usdc?: number | null; weth?: number | null; token?: number | null; n?: number | null };
 
 function insert(ev: EventRow): void {
   const d = conn();
   if (!d) return;
   try {
-    d.prepare("INSERT INTO events (ts, kind, type, usdc, weth, n) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(now(), ev.kind, ev.type ?? null, ev.usdc ?? null, ev.weth ?? null, ev.n ?? null);
+    d.prepare("INSERT INTO events (ts, kind, type, usdc, weth, token, n) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(now(), ev.kind, ev.type ?? null, ev.usdc ?? null, ev.weth ?? null, ev.token ?? null, ev.n ?? null);
   } catch { /* best-effort */ }
 }
 
@@ -148,6 +168,13 @@ export function recordEarned(weth: number): void {
 export function recordDevWeth(weth: number): void {
   if (!Number.isFinite(weth) || weth <= 0) return;
   insert({ kind: "dev", weth });
+}
+
+// Agent tokens burned this treasury cycle (BURN_BPS of the claimed token fees). Each burn
+// is its own `burn` event (an increment), so summing them gives all-time tokens burned.
+export function recordTokenBurned(token: number): void {
+  if (!Number.isFinite(token) || token <= 0) return;
+  insert({ kind: "burn", token });
 }
 
 type Conn = NonNullable<ReturnType<typeof conn>>;
@@ -219,7 +246,7 @@ function buildHourlyByType(d: Conn): { startMs: number; xapi: number[]; inferenc
 export function summary(): Summary {
   const empty: Summary = {
     mentions: 0, replies: 0, llm: 0, warns: 0, errors: 0,
-    spentUsd: 0, spentByType: { "x-api": 0, compute: 0, inference: 0, x402: 0 }, earnedWeth: 0, devWeth: 0,
+    spentUsd: 0, spentByType: { "x-api": 0, compute: 0, inference: 0, x402: 0 }, earnedWeth: 0, devWeth: 0, tokenBurned: 0,
     spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0,
     chart: {
       day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 },
@@ -237,7 +264,8 @@ export function summary(): Summary {
         COUNT(*)           FILTER (WHERE kind = 'warn')        AS warns,
         COUNT(*)           FILTER (WHERE kind = 'error')       AS errors,
         COALESCE(SUM(usdc) FILTER (WHERE kind = 'spend'), 0)   AS spentUsd,
-        COALESCE(SUM(weth) FILTER (WHERE kind = 'dev'),   0)   AS devWeth
+        COALESCE(SUM(weth) FILTER (WHERE kind = 'dev'),   0)   AS devWeth,
+        COALESCE(SUM(token) FILTER (WHERE kind = 'burn'), 0)   AS tokenBurned
       FROM events
     `).get() as Record<string, number>;
     const spentByType: Record<SpendType, number> = { "x-api": 0, compute: 0, inference: 0, x402: 0 };
@@ -271,7 +299,7 @@ export function summary(): Summary {
     return {
       mentions: agg.mentions, replies: agg.replies, llm: agg.llm, warns: agg.warns, errors: agg.errors,
       spentUsd: agg.spentUsd, spentByType,
-      earnedWeth: getMeta("last_earned_weth") ?? 0, devWeth: agg.devWeth,
+      earnedWeth: getMeta("last_earned_weth") ?? 0, devWeth: agg.devWeth, tokenBurned: agg.tokenBurned,
       spentUsdWindow: win.spentUsdWindow, inferenceUsdWindow: win.inferenceUsdWindow,
       earnedWethWindow: win.earnedWethWindow, rateWindowHours,
       chart: { day, byType },

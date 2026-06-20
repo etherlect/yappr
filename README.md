@@ -251,7 +251,7 @@ export const handler: SkillHandler = async (params) => {
 
 ### Reading the agent's stats
 
-`summary()` returns the agent's ledger — lifetime counters (mentions, replies, LLM calls), spend (`spentUsd` plus `spentByType`: `x-api` / `inference` / `compute` / `x402`), earnings (`earnedWeth`, `devWeth`), and the trailing-window burn figures behind the runway estimate. `llmCreditBalance()` reads the remaining inference budget in USD (`null` if unavailable). It's a synchronous read of the same SQLite DB the agent writes, so it's cheap to call:
+`summary()` returns the agent's ledger — lifetime counters (mentions, replies, LLM calls), spend (`spentUsd` plus `spentByType`: `x-api` / `inference` / `compute` / `x402`), earnings (`earnedWeth`, `devWeth`), tokens burned (`tokenBurned`, the `BURN_BPS` share of claimed fees, in token units), and the trailing-window burn figures behind the runway estimate. `llmCreditBalance()` reads the remaining inference budget in USD (`null` if unavailable). It's a synchronous read of the same SQLite DB the agent writes, so it's cheap to call:
 
 ```ts
 // config/skills/stats/handler.ts (abridged)
