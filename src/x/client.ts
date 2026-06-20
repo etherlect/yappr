@@ -1,3 +1,4 @@
+import twitterText from "twitter-text";
 import { payFetch, paidUsd } from "../wallet.js";
 import { config } from "../config.js";
 import { log } from "../log.js";
@@ -204,9 +205,13 @@ export async function postTweet(
   opts: { replyTo?: string; quoteTweetId?: string; mediaIds?: string[] } = {},
 ): Promise<void> {
   // /tweets/long supports the full character limit; plain /tweets rejects longer text.
+  // Use the cheaper /tweets endpoint when the text fits within the standard 280-char
+  // limit, and only fall back to /tweets/long when it's longer. The limit is X's own
+  // *weighted* length (twitter-text), so URLs count as 23 chars, CJK/emoji as 2, etc.
   // Both accept `medias` — a comma-separated list of media IDs from uploadMedia() — to
   // attach images to the post.
-  await post("/tweets/long", {
+  const path = twitterText.parseTweet(text).weightedLength > 280 ? "/tweets/long" : "/tweets";
+  await post(path, {
     text,
     ...(opts.replyTo ? { in_reply_to_tweet_id: opts.replyTo } : {}),
     ...(opts.quoteTweetId ? { quote_tweet_id: opts.quoteTweetId } : {}),
