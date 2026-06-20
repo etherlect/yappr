@@ -282,6 +282,8 @@ min_holding: 1000   # asker must hold ≥ 1000 of the agent's token
 
 The gate is enforced **in code on every call**, never trusted to the LLM: the asker's identity comes from the tweet itself and their balance from the DB cache the holder hook (`config/hooks/holder.ts`) maintains — so it can't be talked around with prompt injection, and removing the hook fails closed (every holder skill denies). Admins always bypass holder gates. Holder skills are still listed in the prompt for everyone — qualification is per-asker and shifts as balances move — so an unqualified caller simply gets an access-denied reply the agent relays, which doubles as a natural nudge to go buy in. Use `min_holding: 0` (or omit it) to require only a known Bankr wallet rather than a balance.
 
+Holdings are measured from the asker's **Bankr wallet** — the one Bankr auto-custodies for their X handle (so effectively every user has one). Tokens an asker holds in any other, non-Bankr wallet are invisible to the agent and don't count toward the gate; a zero balance means "none in their Bankr wallet", not necessarily "not a holder".
+
 ## Storing data
 
 Skills get persistent storage in the agent's own SQLite DB — **don't open your own files**: data in the shared DB lives at `DB_PATH` (outside the dir wiped on redeploy) and rides along in the `yappr status` rolling backups; a file next to your skill does neither.

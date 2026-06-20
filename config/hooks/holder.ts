@@ -4,6 +4,11 @@ import { agentPrompt, skillStore, log, config, type AgentHooks } from "yappr";
 // agent job — their wallet is custodied by Bankr, keyed to their X handle) and
 // their on-chain balance of the agent's own token, then injects both into the
 // prompt context so the model knows whether it's talking to a holder.
+//
+// Holdings are read ONLY from this Bankr wallet — the one Bankr auto-custodies for
+// every X user (so any user effectively has one). If a user holds the token in some
+// other, non-Bankr wallet, the agent has no way to see it: a zero/unknown balance
+// here means "none in their Bankr wallet", not "definitely not a holder".
 // Delete this file to disable — nothing in the engine depends on it.
 //
 // Cost model:

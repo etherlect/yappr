@@ -15,6 +15,11 @@ import type { Tweet } from "../x/types.js";
 // gated the asker's entries are as fresh as they'll get. If the hook was
 // removed, no holdings exist in the DB and every holder skill denies — closed
 // by default, never open.
+//
+// The balance is the asker's BANKR wallet balance only — the wallet Bankr
+// auto-custodies for their X handle. Tokens the asker holds in any other (non-Bankr)
+// wallet are invisible here and don't count toward the gate; the threshold is
+// measured against their Bankr-wallet holdings specifically.
 
 // Mirrors the hook's storage layout (namespace + key shapes + entry types).
 const STORE_NS = "bankr-wallet";
