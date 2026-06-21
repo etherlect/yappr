@@ -19,9 +19,9 @@ Shared parameters:
 ### post
 Publish a new tweet, a reply, or a quote tweet.
 - When: the user asks to tweet, reply, or quote something.
-- `text` (required unless media is attached) — the tweet body. Pass an empty string for an image-only post.
+- `text` (required unless media is attached) — the tweet body. Pass an empty string for an image-only post. Long-form (>280 chars) is fine — it's auto-routed to the long-tweet endpoint, and reply / quote / media all still apply, so you can write a long quote tweet or a long reply.
 - `reply_to` (optional) — a tweet ID/URL to reply under.
-- `quote_id` (optional) — a tweet ID/URL to quote.
+- `quote_id` (optional) — a tweet ID/URL to quote. Works for posts of any length, short or long-form.
 - `media_url` (optional) — an image URL to attach (or several, comma-separated, up to 4). Each is uploaded to X automatically and embedded in the post.
 - `media_id` (optional) — one or more media IDs already uploaded to X (comma-separated), e.g. the `media_id`(s) returned by a media skill like `chart` or `generate-image`. Attached as-is, no re-upload. Combines with `media_url`, up to 4 total.
 
