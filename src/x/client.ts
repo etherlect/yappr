@@ -208,8 +208,10 @@ export async function postTweet(
   // Use the cheaper /tweets endpoint when the text fits within the standard 280-char
   // limit, and only fall back to /tweets/long when it's longer. The limit is X's own
   // *weighted* length (twitter-text), so URLs count as 23 chars, CJK/emoji as 2, etc.
-  // Both accept `medias` — a comma-separated list of media IDs from uploadMedia() — to
-  // attach images to the post.
+  // Both endpoints accept the same write params — `in_reply_to_tweet_id`, `quote_tweet_id`,
+  // and `medias` (comma-separated media IDs from uploadMedia()) — so the auto-selected path
+  // never changes what a post can do: a quote tweet or reply works whether it's short or
+  // long-form (twit.sh added quote_tweet_id support to /tweets/long).
   const path = twitterText.parseTweet(text).weightedLength > 280 ? "/tweets/long" : "/tweets";
   await post(path, {
     text,
