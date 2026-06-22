@@ -10,8 +10,8 @@ const ORIGIN = "https://blockrun.ai";
 const ENDPOINT = `${ORIGIN}/api/v1/images/generations`;
 
 // Available image models and their x402 price (USDC on Base, quoted at 1024x1024, 1
-// image — prices are dynamic and non-square sizes may cost more). gpt-image-1 is the
-// cheapest frontier model and what we use here; swap MODEL to trade cost for quality:
+// image — prices are dynamic and non-square sizes may cost more). gpt-image-2 is the
+// default (clearly better output than gpt-image-1); set GENERATE_IMAGE_MODEL to trade cost/quality:
 //   openai/gpt-image-1          $0.021
 //   openai/gpt-image-2          $0.063
 //   google/nano-banana          $0.053
@@ -19,12 +19,12 @@ const ENDPOINT = `${ORIGIN}/api/v1/images/generations`;
 //   zai/cogview-4               $0.016
 //   xai/grok-imagine-image      $0.021
 //   xai/grok-imagine-image-pro  $0.074
-const MODEL = "openai/gpt-image-1"; // $0.021 / image (1024x1024)
+const MODEL = process.env.GENERATE_IMAGE_MODEL || "openai/gpt-image-2"; // $0.063 / image (1024x1024); override via env
 
 // Orientation keyword → the pixel dimensions sent to the endpoint as `size`. Square is
 // the default when the caller gives no (or an unrecognised) size.
-// gpt-image-1 only accepts these three sizes (1024x1024, 1536x1024, 1024x1536) — the
-// 1792-wide DALL·E 3 sizes are rejected. Update these if you switch MODEL.
+// gpt-image-2 accepts these three sizes (1024x1024, 1536x1024, 1024x1536) — the
+// 1792-wide DALL·E 3 sizes are rejected. Update these if you switch MODEL to a non-OpenAI one.
 const SIZES: Record<string, string> = {
   square: "1024x1024",
   landscape: "1536x1024",
