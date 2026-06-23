@@ -4,7 +4,7 @@ description: Generate image(s) from a text prompt, upload them to X, and return 
 access: admin
 ---
 
-Generate an image from a text description using OpenAI `gpt-image-1` (via the BlockRun x402 gateway, paid from the agent wallet — so this costs money per call).
+Generate an image from a text description using OpenAI `gpt-image-2` (via the BlockRun x402 gateway, paid from the agent wallet — so this costs money per call). Override the model with the `GENERATE_IMAGE_MODEL` env var.
 
 Extract these parameters:
 - `prompt` (required) — the image description, in the user's own words (e.g. "anime style white cat playing on green grass"). Build it from what the user actually asked for; don't invent detail they didn't request.
