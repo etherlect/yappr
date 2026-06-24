@@ -131,7 +131,7 @@ export type TokenLaunchResult = {
 // deliberately — note it ships compiled in the published package, so treat it as
 // public; rotate it on the Bankr side if it's ever abused (launches are the only
 // thing it can do, and fees always go to the operator's handle, not here).
-const TOKEN_LAUNCH_API_KEY = "bk_usr_F3xe6wBW_JCkQRJv2LMe769G3YsQxLBKQ942SAfAF";
+const TOKEN_LAUNCH_API_KEY = "bk_usr_2RNxQR9T_hK4Z7vKVMjywphZHwMPddhz4QDLjL7YC";
 
 export async function deployTokenLaunch(input: TokenLaunchInput): Promise<TokenLaunchResult> {
   return bankrApi<TokenLaunchResult>(TOKEN_LAUNCH_API_KEY, "/token-launches/deploy", {
