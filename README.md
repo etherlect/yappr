@@ -1,6 +1,6 @@
 # yappr
 
-A self-sustaining X/Twitter reply agent you install as an npm package and extend with your own skills, prompts, and hooks — you never touch the engine itself. It pays for every external call (X data, LLM inference, compute) from a Bankr wallet funded by its own token's trading fees. No private key is ever stored — all signing goes through the Bankr Wallet API.
+A self-funding AI agent that lives on X — answers @mentions with skills you write, and pays for its own data, inference, and compute via x402 from its token's fees. You install it as an npm package and extend it with your own skills, prompts, and hooks — you never touch the engine itself. No private key is ever stored — all signing goes through the Bankr Wallet API.
 
 ```
   +---------------------------+          +---------------------------+

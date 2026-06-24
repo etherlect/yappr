@@ -1,6 +1,6 @@
 # yappr
 
-> Orientation for LLMs and contributors working on the **yappr engine** — a self-funding X/Twitter reply agent. It pays for every external call (X data, LLM inference, compute) from a Bankr wallet topped up by its own token's trading fees. **No private key is ever stored** — all signing and payments go through the Bankr REST API.
+> Orientation for LLMs and contributors working on the **yappr engine** — a self-funding AI agent that lives on X, answers @mentions with skills you write, and pays for its own data, inference, and compute via x402 from its token's fees. **No private key is ever stored** — all signing and payments go through the Bankr REST API.
 
 For *using/forking* yappr (env vars, customising personality/skills/hooks), read `README.md` first — this file is about the code itself.
 

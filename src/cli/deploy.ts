@@ -320,7 +320,7 @@ async function main() {
 
   const TOTAL_STEPS = 7;
 
-  banner("Deploy", "Self-sustaining AI agent on X");
+  banner("Deploy", "Self-funding AI agent on X");
 
   if (process.env.CLOUD_INSTANCE === "true") {
     console.error("\n  This looks like the deployed cloud instance.");

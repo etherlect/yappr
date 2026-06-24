@@ -1,17 +1,18 @@
 {
   "name": "yappr",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
-  "description": "pre-publish",
+  "description": "A self-funding AI agent that lives on X — answers @mentions with skills you write, and pays for its own data, inference, and compute via x402 from its token's fees.",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "bin": {
-    "yappr": "./dist/src/cli/index.js"
+    "yappr": "dist/src/cli/index.js"
   },
   "engines": {
     "node": ">=20"
   },
   "files": [
+    "README.md",
     "dist",
     "config",
     ".env.example"
@@ -35,7 +36,6 @@
     "build": "tsc",
     "postbuild": "chmod +x dist/src/cli/index.js",
     "typecheck": "tsc --noEmit",
-    "publish:pre": "npm run build && node scripts/publish-pre.mjs",
     "deploy": "tsx src/cli/deploy.ts",
     "ssh": "tsx src/cli/ssh.ts",
     "status": "tsx src/cli/status.ts"
