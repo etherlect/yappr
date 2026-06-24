@@ -79,7 +79,9 @@ const tracedFetch: typeof fetch = async (input, init) => {
 function paidFetch(): typeof fetch {
   if (!_payFetch) {
     const signer = createBankrSigner(config.bankrApiKey, walletAddress());
-    _payFetch = createPayFetch(signer, tracedFetch);
+    // Cap the client-side path at the same per-call ceiling as the gateway fallback below,
+    // so no single x402 call can authorize more than FALLBACK_MAX_USD on either path.
+    _payFetch = createPayFetch(signer, tracedFetch, FALLBACK_MAX_USD);
   }
   return _payFetch;
 }
