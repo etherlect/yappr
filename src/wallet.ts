@@ -148,7 +148,12 @@ export async function payFetch(input: RequestInfo | URL, init: RequestInit = {})
   // validates EIP-3009 signatures via ERC-1271 on the delegate, and the plain
   // /wallet/sign signature is rejected. Bankr's /wallet/x402-pay gateway clears the
   // delegation and pays in one call, so route the same request through it.
-  if (!res || res.status === 402) {
+  // A 403 after the client-side payment is the same story for some endpoints: they
+  // reject the raw client-side EIP-3009 X-PAYMENT (e.g. ones gated by a SIWX / "agent
+  // backed by a real human" verification, like Exa) but accept the Bankr gateway's
+  // payment — so fall back on 403 too. If the gateway also can't pay, the original
+  // response is surfaced.
+  if (!res || res.status === 402 || res.status === 403) {
     const maxUsd = Math.min((res && (await requiredUsd(res))) ?? FALLBACK_MAX_USD, FALLBACK_MAX_USD);
     log.warn(
       { url: redactUrl(url), method, status: res?.status, maxUsd, err: clientErr instanceof Error ? clientErr.message : clientErr },

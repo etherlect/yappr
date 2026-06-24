@@ -1,7 +1,7 @@
 ---
 name: generate-image
 description: Generate image(s) from a text prompt, upload them to X, and return their media_id(s). Use when the user asks you to create, generate, draw, paint, or make an image/picture of something.
-access: admin
+access: all
 ---
 
 Generate an image from a text description using OpenAI `gpt-image-2` (via the BlockRun x402 gateway, paid from the agent wallet — so this costs money per call). Override the model with the `GENERATE_IMAGE_MODEL` env var.

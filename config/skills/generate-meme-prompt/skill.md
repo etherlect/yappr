@@ -1,7 +1,7 @@
 ---
 name: generate-meme-prompt
 description: Invent a funny Crypto-Twitter image prompt for a meme about a tweet — for when the user wants a meme but hasn't said what the image should show. generate-image then renders it. Use for "make a meme", "meme this".
-access: admin
+access: all
 ---
 
 Use this when the user wants a meme about a tweet but **hasn't described what the image should actually show** — it invents the funny visual for you (a cheap LLM call) by writing a Crypto-Twitter-aware image prompt. It does **not** render anything; after it returns the prompt, you call the **generate-image** skill to create the meme and attach it.
