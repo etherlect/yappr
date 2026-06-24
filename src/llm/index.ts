@@ -173,13 +173,19 @@ export async function chat(
   const t = Date.now();
   const model = opts.model ?? config.llmModel;
   recordLlm(); // one inference request (counter; USDC cost recorded below from usage)
-  // Full context sent to the LLM this turn (every message, verbatim). Each
-  // message is separated by an empty line so the contexts are readable in logs.
-  const rendered = messages.map((m) => `[${m.role}]\n${renderContent(m.content)}`).join("\n\n");
-  log.info(
-    { model, jsonMode: opts.jsonMode ?? false },
-    `LLM request (${messages.length} messages):\n\n${rendered}\n`,
-  );
+  // Full context sent to the LLM this turn (every message, verbatim), gated behind
+  // LOG_LLM_CONTEXT (default OFF). Each message is separated by an empty line so the
+  // contexts are readable in logs. When off (the default), log only a compact one-line
+  // summary so prompts/user content stay out of the logs (token/cost ledger unaffected).
+  if (config.logLlmContext) {
+    const rendered = messages.map((m) => `[${m.role}]\n${renderContent(m.content)}`).join("\n\n");
+    log.info(
+      { model, jsonMode: opts.jsonMode ?? false },
+      `LLM request (${messages.length} messages):\n\n${rendered}\n`,
+    );
+  } else {
+    log.info({ model, jsonMode: opts.jsonMode ?? false }, `LLM request (${messages.length} messages)`);
+  }
   const res = await fetch(`${LLM_URL}/v1/chat/completions`, {
     method: "POST",
     headers: {
@@ -217,10 +223,16 @@ export async function chat(
 
   // Full text received back from the LLM this turn. The cost rides in the `usd` field
   // (same convention as x-api calls) and is also echoed in the message — the JSON tail
-  // here is dominated by `content`, so a compact "$… · N tok" keeps it glanceable.
+  // here is dominated by `content`, so a compact "$… · N tok" keeps it glanceable. The
+  // verbatim `content` is included only when LOG_LLM_CONTEXT is on (see the request log).
   const tokens = Number(json.usage?.total_tokens);
   const costTag = usd != null ? ` · $${usd.toFixed(6)}${Number.isFinite(tokens) ? ` · ${tokens} tok` : ""}` : "";
-  log.info({ ms: Date.now() - t, usage: json.usage, usd, content }, `LLM response${costTag}`);
+  log.info(
+    config.logLlmContext
+      ? { ms: Date.now() - t, usage: json.usage, usd, content }
+      : { ms: Date.now() - t, usage: json.usage, usd },
+    `LLM response${costTag}`,
+  );
   if (!content) throw new Error("Bankr LLM returned empty content");
   return content as string;
 }

@@ -111,6 +111,7 @@ All have sensible defaults; set them in `.env` to override:
 | `DEV_TOKEN_BPS` / `DEV_WETH_BPS` | `0` | Dev cut of claimed token / WETH (basis points) |
 | `TREASURY_DRY_RUN` | `false` | Log treasury/wallet writes without submitting anything |
 | `LLM_TIMEOUT_MS` | `120000` | Per-request timeout on LLM completions |
+| `LOG_LLM_CONTEXT` | `false` | When off (default), logs only a compact LLM summary (model, message count, tokens, cost), keeping prompts and user/tweet content out of the logs. Set `true` to dump the full context every call (each request message + the response text, verbatim) for debugging. Token/cost tracking is unaffected |
 | `DB_PATH` | `./yappr.db` | SQLite database location (the deploy sets `/var/lib/yappr/yappr.db` on the server) |
 | `CRON_TICK_MS` | `10000` | How often the cron scheduler checks for due jobs |
 | `CRON_MAX_JOBS` | `20` | Max active cron jobs in total |

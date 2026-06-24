@@ -74,5 +74,6 @@ While open, the dashboard snapshots the server DB into `instance/backups/yappr-<
 - **All money/identity goes through Bankr** (`src/bankr.ts`). No keys on disk.
 - **`src/x/client.ts` is a deliberately complete SDK.** Not every method is wired to a skill; they're building blocks for skill authors. Keep it that way.
 - **`TREASURY_DRY_RUN=true`** makes every treasury/wallet write a logged no-op — use it to verify cycle logic without spending. `submitTx`/`treasury.*` honor it.
+- **`LOG_LLM_CONTEXT=true`** dumps the full LLM context to the logs: every request message verbatim plus the full response text from `chat()` (`llm/index.ts`). Default off — `chat()` logs only a compact summary (model, message count, tokens, cost), keeping prompts/user content out of the logs. The token/cost ledger is unaffected.
 - **Skill access is enforced in code** (`reply/agent.ts`), never trusted to the LLM: `access: admin` skills only run for handles in `ADMIN_HANDLES`; `access: holder` skills need DB-cached holdings ≥ `min_holding` (`skills/holder-access.ts`, fed by the `holder` hook; admins bypass).
 - Run `npm run typecheck` after changes.

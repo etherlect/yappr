@@ -47,6 +47,11 @@ export const config = {
   // sent to the vision model in one reply — each image is thousands of prompt
   // tokens, so this bounds the cost of an image-heavy thread.
   maxImages: numeric("MAX_IMAGES", "8"),
+  // When false (default), each LLM call logs only a compact summary (model, message count,
+  // token usage, cost), keeping prompts and user/tweet content out of the logs. Set true to
+  // log the FULL context instead — every request message verbatim plus the full response
+  // text — for debugging. The token/cost ledger is unaffected either way.
+  logLlmContext: optional("LOG_LLM_CONTEXT", "false") === "true",
   pollIntervalMs: numeric("POLL_INTERVAL_MS", "20000"),
   treasuryIntervalMs: numeric("TREASURY_INTERVAL_MS", "3600000"),
   burnBps: numeric("BURN_BPS", "5000"),
