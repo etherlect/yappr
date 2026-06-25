@@ -14,10 +14,11 @@ npm run typecheck  # tsc --noEmit — run this after any change
 npm run build      # compile to dist/  (the instance consumes dist/)
 ```
 
-`update` / `deploy` / `status` / `ssh` are normally run from an **instance** because they need the instance's `.env` + `config/`:
+`update` / `deploy` / `status` / `ssh` / `logs` are normally run from an **instance** because they need the instance's `.env` + `config/`:
 
 - `yappr update` bumps the package to `yappr@latest`, then reconciles the newly-shipped `config/` into the instance's `./config` — fast-forward files the user hasn't touched, prompt on edits, add brand-new ones — and offers to redeploy. Also reachable from the status dashboard's `u` key.
 - `yappr deploy` bundles this engine with `npm pack` and installs the tarball on the server, then starts it under pm2 and opens the dashboard.
+- `yappr logs` (`cli/logs.ts`) SSHes in (same cached-creds-then-API resolution as `ssh`), reads the agent's full pm2 stdout + stderr log files via `pm2 jlist` paths, merges them chronologically, strips pino-pretty's ANSI colors, and writes/opens a timestamped `.txt` in the OS temp dir. Unlike `status` (live tail of recent lines), this captures everything.
 
 The `npm run deploy|status|ssh` scripts here are just the source runners for engine dev.
 
@@ -35,7 +36,7 @@ Boot also prefetches LLM pricing (`loadModelPricing`, for inference costing) and
 
 ## Status dashboard & backups
 
-`yappr status` (`cli/status.ts`) renders a live terminal dashboard by SSHing into the deployed box. It reads counters by running `stats-cli summary` remotely (never scrapes logs) and derives three health metrics from the ledger + live on-chain balances: **Runway** (treasury USD ÷ gross burn across two tanks — USDC for x-api+compute, credits for inference — whichever empties first; cold-start and a downtime floor use the poll-cadence cost), **Sustainable** (window earnings ≥ window spend) and **Profitable** (all-time earnings − spend). The trailing-window figures come from `summary()`, which also returns `chart` series — cumulative spend/earn over the last 24h (`day`), plus per-hour spend by category (`byType`, 24 clock-aligned buckets) — feeding an always-on CHART panel between ACTIVITY and LOGS with three views cycled by ←/→: 24h spent-vs-earned line chart (`asciichart`), hourly spent-vs-earned bars, and hourly expenses by category (stacked bars). Footer lifecycle keys (each confirmed with `y`): `r`/`s`/`S` restart/stop/start, `d` redeploy, `u` update, `t` theme.
+`yappr status` (`cli/status.ts`) renders a live terminal dashboard by SSHing into the deployed box. It reads counters by running `stats-cli summary` remotely (never scrapes logs) and derives three health metrics from the ledger + live on-chain balances: **Runway** (treasury USD ÷ gross burn across two tanks — USDC for x-api+compute, credits for inference — whichever empties first; cold-start and a downtime floor use the poll-cadence cost), **Sustainable** (window earnings ≥ window spend) and **Profitable** (all-time earnings − spend). The trailing-window figures come from `summary()`, which also returns `chart` series — cumulative spend/earn over the last 24h (`day`), plus per-hour spend by category (`byType`, 24 clock-aligned buckets) — feeding an always-on CHART panel between ACTIVITY and LOGS with three views cycled by ←/→: 24h spent-vs-earned line chart (`asciichart`), hourly spent-vs-earned bars, and hourly expenses by category (stacked bars). Footer lifecycle keys (each confirmed with `y`): `r`/`s`/`S` restart/stop/start, `d` redeploy, `u` update, `t` theme. `l` pulls the agent's full logs (pm2 stdout+stderr merged, ANSI stripped) into a temp `.txt` and opens it — over the dashboard's existing SSH connection, no teardown (shares `dumpLogs` with `yappr logs`). `h` opens a popup listing every shortcut.
 
 While open, the dashboard snapshots the server DB into `instance/backups/yappr-<date>.db` (one file per day, rolling 7) via `cli/backup.ts` — SQLite `VACUUM INTO` over SSH (consistent, no `-wal`/`-shm`), on launch, every 20 min, and on quit. `yappr deploy` restores the latest local backup onto a **fresh** instance (never clobbers an existing DB); the DB otherwise survives same-instance redeploys because it lives at `/var/lib/yappr` (`DB_PATH`), outside the wiped `/yappr`.
 

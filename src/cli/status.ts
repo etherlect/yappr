@@ -31,6 +31,7 @@ import {
 } from "./ui.js";
 import { backupRemoteDb, backupLabel } from "./backup.js";
 import { hostKeyConfig } from "./host-key.js";
+import { dumpLogs } from "./logs.js";
 import {
   type ChartSeries, SPENT_RGB, EARN_RGB, CAT_RGB, catColor, HOUR_MS,
   renderLineChart, renderHourlyBars, renderHourlySpentEarned,
@@ -403,6 +404,8 @@ type State = {
   scroll: number; logRows: number;
   // Pending command awaiting a y/n confirmation in the footer (null = none).
   confirm: { prompt: string; action: () => void } | null;
+  // When true, the keyboard-shortcut help overlay is shown (toggled by `h`).
+  help: boolean;
   // Which chart panel is shown (←/→): 0 = spent/earned 24h, 1 = hourly spent vs
   // earned, 2 = hourly expenses by category.
   chartIndex: number;
@@ -482,9 +485,9 @@ function buildCronFrame(state: State, cols: number, rows: number): string[] {
   out.push(...padRows(lines, bodyRows).map((l) => fit(l, cols)));
 
   out.push(footerLine(state, [
-    key("←/→", "page"), key("shift+←/→", "status"), key("t", "theme"),
+    key("h", "help"), key("←/→", "page"), key("shift+←/→", "status"), key("t", "theme"),
     key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"), key("u", "update"),
-    key("q", "quit"),
+    key("l", "logs"), key("q", "quit"),
   ], cols));
   return out;
 }
@@ -727,12 +730,43 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
 
   // Footer: a confirmation prompt when a command is pending, otherwise key hints.
   out.push(footerLine(state, [
-    key("up/dn", "scroll"), key("g/G", "top/live"), key("←/→", "chart"), key("shift+←/→", "cron"),
+    key("h", "help"), key("up/dn", "scroll"), key("g/G", "top/live"), key("←/→", "chart"), key("shift+←/→", "cron"),
     key("t", "theme"), key("r", "restart"), key("s", "stop"), key("S", "start"), key("d", "redeploy"), key("u", "update"),
-    key("q", "quit"),
+    key("l", "logs"), key("q", "quit"),
   ], cols));
 
   return out;
+}
+
+// Full-screen modal listing every dashboard shortcut, shown while `state.help` is
+// set (any key closes it). Centered in the terminal so it reads as a popup.
+function buildHelpFrame(cols: number, rows: number): string[] {
+  const row = (k: string, desc: string) => `  ${accent(k.padEnd(13))}${dim(desc)}`;
+  const content = [
+    bold("Navigation"),
+    row("up/dn  (k/j)", "scroll the log feed"),
+    row("g / G", "jump to top / back to live tail"),
+    row("← / →", "cycle chart panels (or cron pages)"),
+    row("shift+← / →", "switch page (status ↔ cron jobs)"),
+    "",
+    bold("Agent lifecycle") + dim("  (each asks for y to confirm)"),
+    row("r", "restart the agent"),
+    row("s / S", "stop / start the agent"),
+    row("d", "redeploy  (exits the dashboard)"),
+    row("u", "update engine + sync skills  (exits)"),
+    "",
+    bold("Other"),
+    row("l", "save all logs to a .txt and open it"),
+    row("t", "toggle dark / light theme"),
+    row("h", "show this help"),
+    row("q  (Ctrl+C)", "quit the dashboard"),
+    "",
+    dim("  press any key to close"),
+  ];
+  const boxWidth = Math.min(cols, 56);
+  const indent = " ".repeat(Math.max(0, Math.floor((cols - boxWidth) / 2)));
+  const box = panel("KEYBOARD SHORTCUTS", content, boxWidth).map((l) => indent + l);
+  return centerRows(box, rows);
 }
 
 function render(state: State) {
@@ -741,7 +775,7 @@ function render(state: State) {
   // narrower keeps every box closed on the right.
   const cols = Math.max(48, (process.stdout.columns ?? 80) - 1);
   const rows = Math.max(16, process.stdout.rows ?? 24);
-  const out = buildFrame(state, cols, rows);
+  const out = state.help ? buildHelpFrame(cols, rows) : buildFrame(state, cols, rows);
   process.stdout.write("\x1b[H" + out.map((l) => themeLine(l) + "\x1b[K").join("\n") + "\x1b[0J");
 }
 
@@ -786,7 +820,7 @@ export async function runStatus(target: { ip: string; password?: string; handle?
     stats: { mentions: 0, replies: 0, llmTurns: 0, spentUsd: 0, warns: 0, errors: 0, earnedWeth: 0, devWeth: 0, spentUsdWindow: 0, inferenceUsdWindow: 0, earnedWethWindow: 0, rateWindowHours: 0, spentByType: { "x-api": 0, inference: 0, compute: 0, x402: 0 }, chart: { day: { spendUsd: [], earnedWeth: [], startMs: 0, endMs: 0 }, byType: { startMs: 0, xapi: [], inference: [], compute: [], x402: [], earned: [] } } },
     logs: [], pm2: null, specs: null, balances: null, computeHours: null,
     creditUsd: null,
-    sysCpu: null, sysMemMb: null, sysDiskUsed: null, scroll: 0, logRows: 0, confirm: null,
+    sysCpu: null, sysMemMb: null, sysDiskUsed: null, scroll: 0, logRows: 0, confirm: null, help: false,
     chartIndex: 0,
     view: 0, cron: null, cronPage: 0,
   };
@@ -940,6 +974,22 @@ export async function runStatus(target: { ip: string; password?: string; handle?
       child.on("error", (e) => { console.error(e); res(); });
     });
   };
+  // Pull ALL logs over the existing SSH connection and open them as a .txt, without
+  // tearing down the dashboard (the `l` key). Non-destructive, so no confirmation.
+  let grabbingLogs = false;
+  const grabLogs = async () => {
+    if (grabbingLogs) return;
+    grabbingLogs = true;
+    note("fetching full logs…");
+    try {
+      const r = await dumpLogs(ssh, process.env.COMPUTE_INSTANCE_ID || state.ip);
+      note(r ? `logs saved (${r.lines.toLocaleString()} lines) → ${r.file}` : "no logs available yet");
+    } catch (err) {
+      note(`logs failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      grabbingLogs = false;
+    }
+  };
 
   // Best-effort enrichments (don't block the dashboard).
   state.pm2 = await fetchPm2(ssh).catch(() => null);
@@ -969,6 +1019,13 @@ export async function runStatus(target: { ip: string; password?: string; handle?
       const page = () => Math.max(1, state.logRows - 1);
       onKey = (buf: Buffer) => {
         const s = buf.toString();
+        // The help overlay swallows the next key: Ctrl+C still quits, anything else closes it.
+        if (state.help) {
+          if (s === "\x03") { void quit(); return; }
+          state.help = false;
+          render(state);
+          return;
+        }
         // A pending command intercepts the next key: "y" or Enter runs it; anything cancels.
         if (state.confirm) {
           const c = state.confirm;
@@ -985,6 +1042,8 @@ export async function runStatus(target: { ip: string; password?: string; handle?
         if (s === "d") { state.confirm = { prompt: "Re-deploy yappr? (exits dashboard)", action: redeploy }; render(state); return; }
         if (s === "u") { state.confirm = { prompt: "Update yappr & sync skills? (exits dashboard)", action: update }; render(state); return; }
         if (s === "t") { toggleTheme(); render(state); return; } // dark ↔ light palette
+        if (s === "l") { void grabLogs(); render(state); return; } // pull all logs → .txt, keep dashboard open
+        if (s === "h") { state.help = true; render(state); return; } // shortcut help popup
         // shift+←/→ slides between the two pages (cyclical, so both keys work).
         if (s === "\x1b[1;2C" || s === "\x1b[1;2D") {
           state.view = (state.view + 1) % 2;
@@ -1126,6 +1185,7 @@ async function reportUnreachable(ip: string, err: unknown): Promise<void> {
 // Render one frame with mock data — for eyeballing the layout without a server:
 //   npm run status -- --demo           # the status page
 //   npm run status -- --demo --cron    # the cron jobs page
+//   npm run status -- --demo --help    # the keyboard-shortcut help popup
 function demo() {
   const demoCron: CronJobInfo[] = [
     { id: 1, prompt: "Check the ETH price and store a one-line market note", schedule: "every 30 min", creator: "alice", enabled: true, nextRunAt: Date.now() + 720_000, lastRunAt: Date.now() - 1_080_000, lastResult: "ETH is at $3,012 (+1.2% on the day), gas 14 gwei.", lastError: null, runs: 41, consecutiveFailures: 0 },
@@ -1144,7 +1204,7 @@ function demo() {
     creditUsd: 4.21,
     sysCpu: 3, sysMemMb: 600, sysDiskUsed: "12G",
     scroll: 0, logRows: 0,
-    confirm: null,
+    confirm: null, help: process.argv.includes("--help"),
     chartIndex: 0,
     view: process.argv.includes("--cron") ? 1 : 0, cron: demoCron, cronPage: 0,
     logs: [
@@ -1169,7 +1229,7 @@ function check(cols = 143, rows = 40) {
     pm2: { status: "online", bootMs: Date.now() - 945_000, restarts: 1, mem: 110 * 1024 * 1024, cpu: 0.4 },
     specs: { cpu: "1", ram: "951Mi", disk: "23G", os: "Ubuntu 22.04.5 LTS" }, scroll: 0, logRows: 0,
     balances: { token: 1_234_567n * 10n ** 18n, weth: 42_000_000_000_000_000n, eth: 3_500_000_000_000_000n, usdc: 1875_000_000n, burned: 2_450_000n * 10n ** 18n, symbol: "EVVR", decimals: 18, usdTotal: 2_104.37, ethUsd: 3000, usd: { token: 92.87, weth: 126, eth: 10.5, usdc: 1875 } },
-    computeHours: 19.5, creditUsd: 4.21, sysCpu: 4, sysMemMb: 740, sysDiskUsed: "9.1G", confirm: null, chartIndex: 0,
+    computeHours: 19.5, creditUsd: 4.21, sysCpu: 4, sysMemMb: 740, sysDiskUsed: "9.1G", confirm: null, help: false, chartIndex: 0,
     view: 0, cron: null, cronPage: 0,
     logs: Array.from({ length: 30 }, () => long),
   };

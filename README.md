@@ -134,9 +134,10 @@ With `yappr` installed in your project (`npm i yappr`), run any command with `np
 | `npx yappr deploy` | Interactive deploy: prompts for any missing env vars (and saves them to `.env`), provisions or reuses an x402 compute instance, seeds LLM credits, uploads the engine + your `config/` + `.env`, starts the agent under pm2, then opens the dashboard. On a fresh instance it offers to restore your latest local DB backup. |
 | `npx yappr status [id]` | Live dashboard for the deployed instance over SSH (treasury, runway, activity, logs). Also pulls periodic DB backups while open. Optional `id` overrides `COMPUTE_INSTANCE_ID`. |
 | `npx yappr ssh [id]` | Open an interactive root shell on the deployed instance. Optional `id` overrides `COMPUTE_INSTANCE_ID`. |
+| `npx yappr logs [id]` | Pull the agent's full logs (pm2 stdout + stderr, merged chronologically, colors stripped) into a timestamped `.txt` in your temp dir and open it. Optional `id` overrides `COMPUTE_INSTANCE_ID`. |
 | `npx yappr help` | List the commands. |
 
-`deploy`, `status`, and `ssh` resolve the target box from `COMPUTE_INSTANCE_ID` / `COMPUTE_HOST` in your `.env` (or the optional `[id]` argument). On first connect they pin the box's SSH host key in `.yappr-known-hosts` (next to `.env`) and refuse a changed key afterwards — if you reprovision the instance, delete its line from that file and reconnect.
+`deploy`, `status`, `ssh`, and `logs` resolve the target box from `COMPUTE_INSTANCE_ID` / `COMPUTE_HOST` in your `.env` (or the optional `[id]` argument). On first connect they pin the box's SSH host key in `.yappr-known-hosts` (next to `.env`) and refuse a changed key afterwards — if you reprovision the instance, delete its line from that file and reconnect.
 
 ## Updating
 

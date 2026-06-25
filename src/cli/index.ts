@@ -13,6 +13,7 @@ Usage: yappr <command> [args]
   deploy            Provision + deploy to an x402 compute instance
   status [id]       Live dashboard for the deployed instance
   ssh [id]          Open an interactive shell on the deployed instance
+  logs [id]         Pull all logs from the deployed instance into a .txt and open it
   help              Show this help
 `);
 }
@@ -42,6 +43,7 @@ try {
     case "deploy": await delegate("./deploy.js"); break;
     case "status": await delegate("./status.js"); break;
     case "ssh": await delegate("./ssh.js"); break;
+    case "logs": await delegate("./logs.js"); break;
     case undefined:
     case "help":
     case "--help":
