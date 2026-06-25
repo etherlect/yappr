@@ -2,6 +2,8 @@
 
 A self-funding AI agent that lives on X — answers @mentions with skills you write, and pays for its own data, inference, and compute via x402 from its token's fees. You install it as an npm package and extend it with your own skills, prompts, and hooks — you never touch the engine itself. No private key is ever stored — all signing goes through the Bankr Wallet API.
 
+> **Beta.** yappr is early, experimental software — it runs an autonomous agent with a live wallet on a live chain. Expect bugs, rough edges, and breaking changes. See the [disclaimer](#disclaimer) before you deploy.
+
 ```
   +---------------------------+          +---------------------------+
   | (1) Tag it on X           |          | (2) It replies            |
@@ -451,3 +453,9 @@ Set `TREASURY_DRY_RUN=true` + short `TREASURY_INTERVAL_MS` to verify the treasur
 ## Contributing
 
 Working on the engine itself (not just configuring your own agent)? See [`llms.txt`](./llms.txt) for a map of `src/`, the three runtime loops, and the project's conventions.
+
+## Disclaimer
+
+yappr is **beta software, provided "as is", without warranty of any kind.** It runs an autonomous agent that holds a wallet, moves funds, can launch a token, and pays for services on a live blockchain — all at your own risk.
+
+You alone are responsible for the agent you run, the funds and keys it touches, and any token you launch or trade with it. The author and contributors accept **no liability for any loss, damage, or cost — financial or otherwise — arising from using, deploying, or relying on yappr** or anything built with it. Nothing here is financial advice. Don't put in funds you can't afford to lose.
