@@ -36,6 +36,7 @@
     "build": "tsc",
     "postbuild": "chmod +x dist/src/cli/index.js",
     "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
     "deploy": "tsx src/cli/deploy.ts",
     "ssh": "tsx src/cli/ssh.ts",
     "status": "tsx src/cli/status.ts"
