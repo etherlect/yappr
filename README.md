@@ -20,6 +20,8 @@ A self-funding AI agent that lives on X — answers @mentions with skills you wr
   +---------------------------+          +---------------------------+
 ```
 
+> **Flagship agent:** the reference **$YAPPR** agent runs on this engine — token contract (Base): [`0x8C3E96713977E61C4180a5f0a6B02Fab86fb5bA3`](https://basescan.org/token/0x8C3E96713977E61C4180a5f0a6B02Fab86fb5bA3).
+
 ## What you can build
 
 yappr is more than a novelty bot — it's a self-funding presence on X that works for you around the clock. Because every agent is just a `config/` folder, you decide what it does and who it serves.
