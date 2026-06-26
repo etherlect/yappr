@@ -24,9 +24,12 @@ For "add", also extract:
 Schedule mapping examples:
 - "every 30 min" → schedule=interval, minutes=30
 - "every 2 hours starting at 9am UTC" → schedule=interval, minutes=120, time=09:00, timezone=UTC (first run at 09:00, then every 2h)
+- "every 12h starting at 19:14 UTC" → schedule=interval, minutes=720, time=19:14, timezone=UTC (first run 19:14, then 07:14, 19:14 … — ONE job)
 - "in one hour" → schedule=once, minutes=60
 - "every day at 9am UTC" → schedule=daily, time=09:00, timezone=UTC
 - "tomorrow at 9 Paris time" → schedule=once, date=<tomorrow's date>, time=09:00, timezone=Europe/Paris
+
+ONE INTERVAL = ONE JOB: any "every N minutes/hours" request is a SINGLE interval job (with an optional start time), no matter how large N is. NEVER split a recurring interval into several daily jobs — "every 12h starting 19:14 UTC" is one interval job (minutes=720), NOT two daily jobs at 19:14 and 07:14. There is no maximum interval; use minutes=720 for 12h, 1440 for 24h, etc.
 
 TIMEZONE RULE: resolve whatever the user says to an IANA name yourself ("Paris time" → Europe/Paris, "CET" → Europe/Paris, "New York" → America/New_York, "9am UTC" → UTC). Only if the user gives a clock time with NO timezone information at all ("at 9am"), do NOT call this skill — reply asking which timezone they mean.
 
