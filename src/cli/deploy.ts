@@ -210,7 +210,7 @@ async function extendComputeInstance(apiKey: string, walletAddress: `0x${string}
 async function topUpLlmCredits(apiKey: string, amountUsd: number): Promise<{ newBalance: number; txHash?: string }> {
   const result = await bankrApi<{ newBalance: number; txHash?: string }>(apiKey, "/llm/credits/topup", {
     method: "POST",
-    body: JSON.stringify({ amountUsd, sourceToken: "USDC" }),
+    body: JSON.stringify({ amountUsd, sourceToken: BASE_USDC_AUTO_TOP_UP_TOKEN.address }),
   });
   return result;
 }
