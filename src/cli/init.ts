@@ -41,9 +41,9 @@ export async function runInit(targetArg = "."): Promise<void> {
     console.log("• .env already exists — left untouched");
   } else if (await exists(examplePath)) {
     await cp(examplePath, destEnv);
-    console.log("• created .env from .env.example — fill in your keys");
+    console.log("• created .env from .env.example");
   }
 
   const where = targetArg === "." ? "" : `cd ${targetArg} && `;
-  console.log(`\nDone. Next:\n  ${where}# edit .env, then run the agent\n  npx yappr start\n`);
+  console.log(`\nDone. Next:\n  ${where}npx yappr deploy\n`);
 }
