@@ -15,6 +15,7 @@ import {
 } from "./tui.js";
 import { bankrApi, bankrX402Pay, deployTokenLaunch } from "../bankr.js";
 import { createBankrSigner, createPayFetch } from "../x402.js";
+import { sleep } from "../util.js";
 import {
   computeInstanceData,
   computeInstanceId,
@@ -185,7 +186,13 @@ async function requiredUsdFromResponse(res: Response): Promise<number | undefine
   return atomic != null && Number.isFinite(n) ? n / 1e6 : undefined;
 }
 
-const COMPUTE_FALLBACK_ATTEMPTS = 2;
+// The gateway is tried at least twice on purpose: when the wallet is EIP-7702-delegated,
+// the FIRST /wallet/x402-pay call typically only clears the delegation (and fails to pay),
+// so a SECOND call is needed to actually pay from the now-bare EOA.
+const COMPUTE_FALLBACK_ATTEMPTS = Number(process.env.COMPUTE_FALLBACK_ATTEMPTS ?? 3);
+// Pause between gateway attempts so the un-delegation tx the first call submits has time
+// to land on-chain before the next attempt tries to pay — retrying immediately races it.
+const COMPUTE_FALLBACK_RETRY_MS = Number(process.env.COMPUTE_FALLBACK_RETRY_MS ?? 3000);
 // Backstop ceiling for the /wallet/x402-pay gateway fallback, used only when the
 // endpoint's live 402 price can't be read — so a bad/unreachable response can't
 // authorize an unbounded amount. The normal path caps at the actual asking price.
@@ -242,14 +249,18 @@ async function computeX402Pay<T = unknown>(
       : COMPUTE_FALLBACK_CEILING_USD;
     warn(`x402 client-side payment failed (${clientErr ? "error" : `HTTP ${res?.status}`}) — retrying via Bankr /wallet/x402-pay`);
     for (let attempt = 1; attempt <= COMPUTE_FALLBACK_ATTEMPTS; attempt++) {
+      // Wait between tries: the first attempt usually just clears the EIP-7702 delegation
+      // (and fails), so give that on-chain tx time to land before the next attempt pays.
+      if (attempt > 1) await sleep(COMPUTE_FALLBACK_RETRY_MS);
       try {
         const result = await bankrX402Pay<T>(apiKey, url, "POST", body, maxUsd);
         if (result.success) {
           if (result.paymentMade?.amountUsd && onPaid) onPaid(result.paymentMade.amountUsd);
           return (typeof result.response === "string" ? safeJsonParse(result.response) : result.response) as T;
         }
-      } catch {
-        // try again, then fall through to surface the original failure
+        warn(`/wallet/x402-pay attempt ${attempt}/${COMPUTE_FALLBACK_ATTEMPTS} failed: ${result.error ?? `HTTP ${result.status}`}`);
+      } catch (err) {
+        warn(`/wallet/x402-pay attempt ${attempt}/${COMPUTE_FALLBACK_ATTEMPTS} errored: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     // Gateway exhausted too — surface the original client-side failure. If the client
