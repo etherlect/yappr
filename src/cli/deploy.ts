@@ -13,7 +13,7 @@ import {
   input, password, select, confirm, uiWidth, banner, step, kv, printPanel,
   ok, info, warn, fail, spin, themeText,
 } from "./tui.js";
-import { bankrApi, deployTokenLaunch } from "../bankr.js";
+import { bankrApi, bankrX402Pay, deployTokenLaunch } from "../bankr.js";
 import { createBankrSigner, createPayFetch } from "../x402.js";
 import {
   computeInstanceData,
@@ -163,6 +163,34 @@ function paymentAtomicFromHeaders(headers: Headers): bigint | undefined {
   }
 }
 
+function safeJsonParse(text: string): unknown {
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+// USD price asked by a 402 response — the base64 `payment-required` header (Bankr
+// style) or the JSON body (Coinbase x402 style), whichever parses. Mirrors the
+// runtime payFetch's requiredUsd() in src/wallet.ts, used to cap the gateway fallback.
+async function requiredUsdFromResponse(res: Response): Promise<number | undefined> {
+  let req: { accepts?: Array<{ maxAmountRequired?: string; amount?: string }> } | undefined;
+  const raw = res.headers.get("payment-required") ?? res.headers.get("x-payment-required");
+  if (raw) {
+    try { req = JSON.parse(Buffer.from(raw, "base64").toString("utf8")); } catch { /* try body */ }
+  }
+  if (!req) {
+    try { req = await res.clone().json() as typeof req; } catch { return undefined; }
+  }
+  const accept = req?.accepts?.[0];
+  const atomic = accept?.maxAmountRequired ?? accept?.amount;
+  const n = Number(atomic);
+  return atomic != null && Number.isFinite(n) ? n / 1e6 : undefined;
+}
+
+const COMPUTE_FALLBACK_ATTEMPTS = 2;
+// Backstop ceiling for the /wallet/x402-pay gateway fallback, used only when the
+// endpoint's live 402 price can't be read — so a bad/unreachable response can't
+// authorize an unbounded amount. The normal path caps at the actual asking price.
+const COMPUTE_FALLBACK_CEILING_USD = Number(process.env.COMPUTE_FALLBACK_MAX_USD ?? 50);
+
 async function computeX402Pay<T = unknown>(
   apiKey: string,
   walletAddress: `0x${string}`,
@@ -171,26 +199,66 @@ async function computeX402Pay<T = unknown>(
   onPaid?: (usd: number) => void,
 ): Promise<T> {
   let paidAtomic: bigint | undefined;
-  // Trace the underlying fetch to capture the paid amount from the X-PAYMENT header the
-  // x402 client sends on its (paid) retry — createPayFetch doesn't surface it otherwise.
+  let requiredUsd: number | undefined;
+  // Trace the underlying fetch to capture (a) the paid amount from the X-PAYMENT header
+  // the x402 client sends on its (paid) retry, and (b) the amount the endpoint asks for
+  // from the 402 challenge — createPayFetch surfaces neither otherwise. The 402 amount
+  // caps the gateway fallback below at what the endpoint actually costs.
   const tracingFetch: typeof fetch = async (input, init) => {
     const res = await fetch(input, init);
     const headers = input instanceof Request ? input.headers : new Headers(init?.headers as HeadersInit | undefined);
     const atomic = paymentAtomicFromHeaders(headers);
     if (atomic != null) paidAtomic = atomic;
+    if (res.status === 402 && requiredUsd == null) requiredUsd = await requiredUsdFromResponse(res.clone());
     return res;
   };
   const payFetch = createPayFetch(createBankrSigner(apiKey, walletAddress), tracingFetch);
 
-  const res = await payFetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body,
-  });
+  let res: Response | undefined;
+  let clientErr: unknown;
+  try {
+    res = await payFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+  } catch (err) {
+    clientErr = err;
+  }
+
+  // Fallback when the client-side x402 payment fails — it threw, or returned a non-2xx.
+  // The usual cause on deploy is the compute facilitator answering 500 "Failed to verify
+  // payment" because Bankr has EIP-7702-delegated the wallet to a smart account after a
+  // prior server-side op (treasury fee claim / swap / transfer): the EOA now has code, so
+  // the plain /wallet/sign signature fails verification. A verify failure means nothing
+  // settled on-chain, so route the same call through Bankr's /wallet/x402-pay gateway —
+  // it clears the delegation and pays server-side in one shot, with no double-charge.
+  // Mirrors the runtime payFetch in src/wallet.ts so deploy (provision + extend) self-heals
+  // on delegated wallets too. (Broader than wallet.ts's 402/403 check, since the compute
+  // server signals this as a 500 rather than re-issuing a 402.)
+  if (!res || !res.ok) {
+    const maxUsd = requiredUsd != null
+      ? Math.min(requiredUsd * 1.1, COMPUTE_FALLBACK_CEILING_USD)
+      : COMPUTE_FALLBACK_CEILING_USD;
+    warn(`x402 client-side payment failed (${clientErr ? "error" : `HTTP ${res?.status}`}) — retrying via Bankr /wallet/x402-pay`);
+    for (let attempt = 1; attempt <= COMPUTE_FALLBACK_ATTEMPTS; attempt++) {
+      try {
+        const result = await bankrX402Pay<T>(apiKey, url, "POST", body, maxUsd);
+        if (result.success) {
+          if (result.paymentMade?.amountUsd && onPaid) onPaid(result.paymentMade.amountUsd);
+          return (typeof result.response === "string" ? safeJsonParse(result.response) : result.response) as T;
+        }
+      } catch {
+        // try again, then fall through to surface the original failure
+      }
+    }
+    // Gateway exhausted too — surface the original client-side failure. If the client
+    // attempt threw (no response), re-throw it; otherwise fall through to the status error.
+    if (!res) throw clientErr;
+  }
 
   const text = await res.text();
-  let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch { parsed = text; }
+  const parsed = safeJsonParse(text);
 
   if (!res.ok) throw new Error(`Compute payment failed: ${res.status} ${JSON.stringify(parsed)}`);
   if (paidAtomic != null && onPaid) onPaid(Number(paidAtomic) / 1e6);
