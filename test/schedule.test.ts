@@ -41,6 +41,43 @@ test("nextRunAt: interval adds the minutes", () => {
   assert.equal(nextRunAt({ type: "interval", minutes: 15 }, after), after + 15 * 60_000);
 });
 
+test("validateSchedule: interval with a start time -> anchored interval", () => {
+  const r = validateSchedule({ schedule: "interval", minutes: "120", time: "09:00", timezone: "UTC" });
+  assert.ok(!("error" in r) && r.type === "interval");
+  assert.equal(r.minutes, 120);
+  assert.ok(r.anchor && r.anchor.time === "09:00" && r.anchor.timezone === "UTC");
+  assert.match(r.anchor!.date, /^\d{4}-\d{2}-\d{2}$/); // date resolved at creation
+});
+
+test("validateSchedule: interval start time still requires a timezone", () => {
+  assert.ok("error" in validateSchedule({ schedule: "interval", minutes: "120", time: "09:00" }));
+});
+
+test("validateSchedule: interval with an explicit start date", () => {
+  assert.deepEqual(
+    validateSchedule({ schedule: "interval", minutes: "120", time: "09:00", timezone: "UTC", date: "2026-12-25" }),
+    { type: "interval", minutes: 120, anchor: { date: "2026-12-25", time: "09:00", timezone: "UTC" } },
+  );
+});
+
+test("nextRunAt: anchored interval fires first at the start, then phase-aligned", () => {
+  const sched = { type: "interval" as const, minutes: 120, anchor: { date: "2026-06-26", time: "09:00", timezone: "UTC" } };
+  const at = (h: number, m = 0) => Date.UTC(2026, 5, 26, h, m);
+  // before the start -> the first run IS the start time
+  assert.equal(nextRunAt(sched, at(9) - 60_000), at(9));
+  // exactly on a phase point -> strictly after -> the next one
+  assert.equal(nextRunAt(sched, at(11)), at(13));
+  // mid-phase (14:00) -> next aligned slot is 15:00
+  assert.equal(nextRunAt(sched, at(14)), at(15));
+});
+
+test("describeSchedule: anchored interval", () => {
+  assert.equal(
+    describeSchedule({ type: "interval", minutes: 120, anchor: { date: "2026-06-26", time: "09:00", timezone: "UTC" } }),
+    "every 120 min from 09:00 UTC (starting 2026-06-26)",
+  );
+});
+
 // Read the HH:MM a given instant shows in a timezone (the invariant a daily schedule
 // must hold, regardless of the UTC offset on that date).
 function wallClock(ms: number, tz: string): string {

@@ -129,7 +129,10 @@ export function addCronJob(input: {
   // Falls back to `now` when created_at is missing/unparseable (or ahead of our
   // clock). If processing was so slow that anchor+delay is already past, the
   // job simply fires on the next tick, like any overdue job.
-  const isRelative = input.schedule.type === "interval" ||
+  // An interval with a wall-clock start is absolute (it anchors at that time, not the
+  // tweet) — only a plain "every N min" interval and a relative "in N min" once anchor
+  // at the asking tweet.
+  const isRelative = (input.schedule.type === "interval" && !input.schedule.anchor) ||
     (input.schedule.type === "once" && input.schedule.minutes !== undefined);
   const tweetAt = Date.parse(input.tweet.created_at ?? "");
   const anchor = isRelative && Number.isFinite(tweetAt) && tweetAt <= now ? tweetAt : now;

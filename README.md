@@ -117,7 +117,7 @@ All have sensible defaults; set them in `.env` to override:
 | `DB_PATH` | `./yappr.db` | SQLite database location (the deploy sets `/var/lib/yappr/yappr.db` on the server) |
 | `CRON_TICK_MS` | `10000` | How often the cron scheduler checks for due jobs |
 | `CRON_MAX_JOBS` | `20` | Max active cron jobs in total |
-| `CRON_MAX_JOBS_PER_USER` | `3` | Max active cron jobs per creator |
+| `CRON_MAX_JOBS_PER_USER` | `10` | Max active cron jobs per creator |
 | `CRON_MIN_INTERVAL_MIN` | `5` | Shortest allowed "every N minutes" interval |
 | `CRON_RUN_TIMEOUT_MS` | `300000` | Per-run timeout on a cron job's agent loop |
 | `CRON_MAX_CONSECUTIVE_FAILURES` | `5` | Auto-pause a recurring job after this many consecutive failures |
@@ -355,7 +355,7 @@ The agent can run prompts on a schedule. A cron job stores a **self-contained in
 > `@youragent send me $10 every day at 13:00 UTC` → the agent creates the job and confirms with its id and next run time.
 
 **Schedules** (the skill maps natural phrasing to these):
-- `every N minutes` — recurring interval (floor: `CRON_MIN_INTERVAL_MIN`)
+- `every N minutes` — recurring interval (floor: `CRON_MIN_INTERVAL_MIN`). Optionally give it a **start time** ("every 2h starting at 09:00 UTC"): it fires first at that wall clock, then every N minutes, phase-aligned to the start.
 - `in N minutes` / `on <date> at <time>` — one-shot (spent after it runs)
 - `every day at HH:MM <timezone>` — daily at a wall-clock time; timezones are IANA names (`Europe/Paris`, `UTC`) and follow DST. A clock time **without** a timezone is rejected — the agent asks the user to specify one rather than guess.
 

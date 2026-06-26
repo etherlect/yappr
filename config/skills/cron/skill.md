@@ -17,12 +17,13 @@ For "add", also extract:
 - prompt (required): the instruction to execute on schedule. It MUST be SELF-CONTAINED — at execution time there is no conversation, so resolve every reference now: "me" → the asker's @handle, "this token" → the actual token, relative amounts → concrete values. Example: user says "send me 10$ every 1h" → prompt: "send $10 of USDC to @theirhandle".
 - schedule (required): one of "interval", "once", "daily"
 - minutes: for interval ("every 30 min" → 30) and relative once ("in one hour" → 60)
-- time: 24h "HH:MM" for daily and absolute once ("9am" → "09:00")
-- date: "YYYY-MM-DD" for absolute once (omit for "the next occurrence of that time")
+- time: 24h "HH:MM" for daily, absolute once, and an interval's optional start time ("9am" → "09:00")
+- date: "YYYY-MM-DD" for absolute once, or an interval's optional start date (omit for "the next occurrence of that time" / today)
 - timezone: IANA name ("Europe/Paris", "America/New_York", "UTC") — REQUIRED whenever `time` is used
 
 Schedule mapping examples:
 - "every 30 min" → schedule=interval, minutes=30
+- "every 2 hours starting at 9am UTC" → schedule=interval, minutes=120, time=09:00, timezone=UTC (first run at 09:00, then every 2h)
 - "in one hour" → schedule=once, minutes=60
 - "every day at 9am UTC" → schedule=daily, time=09:00, timezone=UTC
 - "tomorrow at 9 Paris time" → schedule=once, date=<tomorrow's date>, time=09:00, timezone=Europe/Paris

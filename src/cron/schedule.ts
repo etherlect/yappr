@@ -3,7 +3,9 @@ import { config } from "../config.js";
 // Schedule grammar for cron jobs. Three forms, chosen to match how people phrase
 // requests on X ("every 30min", "in one hour", "every day at 9am Paris time"):
 //
-//   interval — recurring, every N minutes from each run.
+//   interval — recurring, every N minutes from each run; with an optional start
+//              time it fires first at that wall clock, then every N minutes (phase-
+//              aligned to the start, e.g. "every 2h from 09:00 UTC" → 09:00, 11:00 …).
 //   once     — one-shot: either relative ("in N minutes") or absolute
 //              (date? + time + timezone; date omitted = the next occurrence).
 //   daily    — recurring, every day at HH:MM in an IANA timezone.
@@ -11,8 +13,13 @@ import { config } from "../config.js";
 // Timezones are IANA names ("Europe/Paris", "UTC") resolved via Intl, so daily
 // schedules follow DST like a human expects. An absolute time WITHOUT a timezone
 // is rejected — the error message tells the model to ask the user, never to guess.
+
+// A concrete wall-clock start, with the date resolved at creation so an interval's
+// recurrence phase is fixed (not recomputed each run).
+type WallClock = { date: string; time: string; timezone: string };
+
 export type Schedule =
-  | { type: "interval"; minutes: number }
+  | { type: "interval"; minutes: number; anchor?: WallClock }
   | { type: "once"; minutes?: number; date?: string; time?: string; timezone?: string }
   | { type: "daily"; time: string; timezone: string };
 
@@ -44,7 +51,17 @@ export function validateSchedule(raw: Record<string, string>): Schedule | { erro
     if (minutes < config.cronMinIntervalMin) {
       return { error: `interval too short — the minimum is every ${config.cronMinIntervalMin} minute${config.cronMinIntervalMin === 1 ? "" : "s"}` };
     }
-    return { type: "interval", minutes: Math.round(minutes) };
+    const rounded = Math.round(minutes);
+    // Optional wall-clock start ("every 2h starting from 09:00 UTC"): needs a timezone
+    // like any wall-clock time. The start date defaults to today in that zone, resolved
+    // here once so the recurrence phase stays fixed across runs.
+    if (raw.time) {
+      const abs = validateWallClock(raw, "an interval with a start time");
+      if ("error" in abs) return abs;
+      const date = raw.date || todayInZone(abs.timezone, Date.now());
+      return { type: "interval", minutes: rounded, anchor: { date, time: abs.time, timezone: abs.timezone } };
+    }
+    return { type: "interval", minutes: rounded };
   }
 
   if (type === "once") {
@@ -130,13 +147,33 @@ function zonedTimeToInstant(y: number, mo: number, d: number, hh: number, mm: nu
   return t;
 }
 
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+// Calendar date (YYYY-MM-DD) it currently is in `timeZone` — the default start date
+// for an anchored interval when the user gives a time but no date.
+function todayInZone(timeZone: string, now: number): string {
+  const w = wallParts(now, timeZone);
+  return `${w.y}-${pad2(w.mo)}-${pad2(w.d)}`;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Next occurrence of `s` strictly after `after` (epoch ms). Returns null for a
 // spent one-shot (absolute time already in the past — the runner treats overdue
 // one-shots separately; at creation the store rejects null).
 export function nextRunAt(s: Schedule, after: number): number | null {
-  if (s.type === "interval") return after + s.minutes * 60_000;
+  if (s.type === "interval") {
+    const intervalMs = s.minutes * 60_000;
+    if (!s.anchor) return after + intervalMs;
+    // First run is the wall-clock start; then march forward by the interval, returning
+    // the first occurrence strictly after `after` (or the start itself if still ahead).
+    const [hh, mm] = s.anchor.time.split(":").map(Number);
+    const [y, mo, d] = s.anchor.date.split("-").map(Number);
+    const start = zonedTimeToInstant(y, mo, d, hh, mm, s.anchor.timezone);
+    if (start > after) return start;
+    const steps = Math.floor((after - start) / intervalMs) + 1;
+    return start + steps * intervalMs;
+  }
 
   if (s.type === "once") {
     if (s.minutes !== undefined) return after + s.minutes * 60_000;
@@ -173,7 +210,11 @@ function nextWallClock(hh: number, mm: number, timeZone: string, after: number):
 
 // Human/one-line form for logs and the skill's `list` output.
 export function describeSchedule(s: Schedule): string {
-  if (s.type === "interval") return `every ${s.minutes} min`;
+  if (s.type === "interval") {
+    return s.anchor
+      ? `every ${s.minutes} min from ${s.anchor.time} ${s.anchor.timezone} (starting ${s.anchor.date})`
+      : `every ${s.minutes} min`;
+  }
   if (s.type === "once") {
     if (s.minutes !== undefined) return `once, ${s.minutes} min after creation`;
     return `once at ${s.date ? `${s.date} ` : ""}${s.time} ${s.timezone}`;
