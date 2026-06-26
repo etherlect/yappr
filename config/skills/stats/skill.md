@@ -12,7 +12,7 @@ Returns the agent's metrics from its own ledger, plus live balances and a runway
 
 **`balance`** — current state:
 - `treasury` — a ready-to-show holdings string (USDC, the agent token, WETH, ETH, LLM credits), already formatted with zero balances skipped, e.g. `"12.50 USDC, 2.4M YAPPR, 0.030 WETH, 0.005 ETH, $4.20 LLM credits"`. Print it verbatim; `null` ⇒ omit the line.
-- `runway` — how long the treasury lasts at the current burn (ignores incoming earnings): `human` (`"12.5d"` / `"8.0h"` / `"∞"`) plus `hours`/`days`; `estimated: true` ⇒ a cold-start guess, say "roughly"; `limitedBy` ⇒ `"usdc"` or `"llm-credits"`; `available: false` ⇒ couldn't read balances, say so rather than guessing.
+- `runway` — how long the treasury lasts at the current burn (ignores incoming earnings): `human` (`"12.5d"` / `"8.0h"` / `"∞"`) plus `hours`/`days`; `treasuryUsd` is the combined pool (USDC + prepaid LLM credits, since credits auto-refill from USDC — a low credit balance does NOT shorten runway); `estimated: true` ⇒ a cold-start guess, say "roughly"; `available: false` ⇒ couldn't read balances, say so rather than guessing.
 
 In **every** `spentByType`, X-data spend is already folded into `x402` — there is no separate `x-api`, so only ever show `x402`.
 

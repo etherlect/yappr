@@ -516,11 +516,13 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   const nextTreasury = p?.bootMs ? TREASURY_INTERVAL_MS - (elapsed % TREASURY_INTERVAL_MS) : 0;
   const wallet = state.wallet ? `${state.wallet.slice(0, 6)}..${state.wallet.slice(-4)}` : (process.env.BANKR_API_KEY ? dim("resolving") : dim("-"));
 
-  // Two separate fuel tanks: USDC pays x-api + compute + x402, LLM credits pay inference. (We
-  // exclude the agent's own token; we don't assume it stays liquid.) Burn rates: once
-  // there's ≥ RUNWAY_MIN_DATA_HOURS of recorded activity, measure each from the trailing
-  // window (which grows up to 24h); before that, predict the USDC burn from the poll
-  // cadence (the always-on x-api cost) and treat LLM as not-yet-binding — tagged "~".
+  // Burn is split by funding source only for measurement: USDC pays x-api + compute + x402,
+  // LLM credits pay inference — but credits auto-refill from USDC, so for runway they're one
+  // pool, not two independent tanks (see Runway below). (We exclude the agent's own token; we
+  // don't assume it stays liquid.) Burn rates: once there's ≥ RUNWAY_MIN_DATA_HOURS of recorded
+  // activity, measure each from the trailing window (which grows up to 24h); before that,
+  // predict the USDC burn from the poll cadence (the always-on x-api cost) and treat LLM as
+  // not-yet-binding — tagged "~".
   const st = state.stats;
   const bb = state.balances;
   const usdcUsd = bb ? (bb.usd?.usdc ?? Number(formatUnits(bb.usdc, 6))) : null;
@@ -539,14 +541,18 @@ function buildFrame(state: State, cols: number, rows: number): string[] {
   const llmBurn = hasRate ? st.inferenceUsdWindow / st.rateWindowHours : 0;  // inference (credits)
 
   // Runway: how long the treasury lasts at the current GROSS burn (ignores incoming
-  // earnings) — the first of the two tanks to empty. Always a time, never "sustaining".
+  // earnings). LLM credits are NOT a separate hard tank — auto-top-up refills them from
+  // the USDC treasury, so a low credit balance (e.g. $5) doesn't strand the agent, it
+  // renews. So treat USDC + prepaid credits as ONE pool drained by the combined burn:
+  // runway is when the TREASURY runs dry, not when the credit split happens to empty.
+  // Always a time, never "sustaining".
   let runway: string;
   if (usdcUsd == null) {
     runway = dim("…");
   } else {
-    const usdcRunwayH = usdcBurn > 0 ? usdcUsd / usdcBurn : Infinity;
-    const llmRunwayH = llmBurn > 0 ? (state.creditUsd != null ? state.creditUsd / llmBurn : Infinity) : Infinity;
-    const hours = Math.min(usdcRunwayH, llmRunwayH);
+    const totalUsd = usdcUsd + (state.creditUsd ?? 0);   // prepaid credits are USD already spent forward
+    const totalBurn = usdcBurn + llmBurn;                 // x-api + compute + x402 + inference
+    const hours = totalBurn > 0 ? totalUsd / totalBurn : Infinity;
     runway = Number.isFinite(hours)
       ? cyan((estimated ? "~" : "") + fmtDuration(hours * 3_600_000))
       : dim("∞");

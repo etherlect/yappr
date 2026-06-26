@@ -1,9 +1,10 @@
 import { summary, dailyStats, getTreasury, llmCreditBalance, log, type SkillHandler, type SpendType } from "yappr";
 
 // stats: the agent's all-time metrics from its own ledger, plus a runway estimate (how
-// long the treasury lasts at the current burn). The runway mirrors the status dashboard's
-// two-tank model: USDC pays x-api + compute + x402, LLM credits pay inference — runway is
-// whichever tank empties first. (Burn math kept in sync with cli/status.ts by hand.)
+// long the treasury lasts at the current burn). The runway mirrors the status dashboard:
+// USDC pays x-api + compute + x402 and LLM credits pay inference, but credits auto-refill
+// from USDC, so runway treats USDC + prepaid credits as ONE pool drained by the combined
+// burn (not whichever tank empties first). (Burn math kept in sync with cli/status.ts by hand.)
 
 const RUNWAY_MIN_DATA_HOURS = 1; // trust the measured burn only after this much recorded window
 const X_API_POLL_COST_USD = 0.005; // always-on mentions-poll cost — the cold-start/floor burn
@@ -99,9 +100,11 @@ export const handler: SkillHandler = async () => {
   if (creditUsd != null && creditUsd > 0) treasuryParts.push(`$${creditUsd.toFixed(2)} LLM credits`);
   const treasuryLine = treasuryParts.length > 0 ? treasuryParts.join(", ") : null;
 
-  const usdcRunwayH = usdcBurn > 0 ? (usdcUsd != null ? usdcUsd / usdcBurn : Infinity) : Infinity;
-  const llmRunwayH = llmBurn > 0 ? (creditUsd != null ? creditUsd / llmBurn : Infinity) : Infinity;
-  const runwayHours = Math.min(usdcRunwayH, llmRunwayH);
+  // One pool, not two tanks: LLM credits auto-refill from USDC, so a low credit balance
+  // doesn't strand the agent — USDC + prepaid credits drain together at the combined burn.
+  const totalUsd = (usdcUsd ?? 0) + (creditUsd ?? 0);  // prepaid credits are USD spent forward
+  const totalBurn = usdcBurn + llmBurn;                 // x-api + compute + x402 + inference
+  const runwayHours = totalBurn > 0 ? totalUsd / totalBurn : Infinity;
   const runwayKnown = usdcUsd != null || creditUsd != null;
 
   const runway = !runwayKnown
@@ -112,7 +115,7 @@ export const handler: SkillHandler = async () => {
         hours: Number.isFinite(runwayHours) ? Number(runwayHours.toFixed(1)) : null, // null ≈ effectively infinite
         days: Number.isFinite(runwayHours) ? Number((runwayHours / 24).toFixed(2)) : null,
         estimated: !hasRate, // cold-start estimate — not enough recorded burn yet
-        limitedBy: usdcRunwayH <= llmRunwayH ? "usdc" : "llm-credits",
+        treasuryUsd: Number(totalUsd.toFixed(2)), // combined pool: USDC + prepaid LLM credits
         usdcBalanceUsd: usdcUsd,
         llmCreditUsd: creditUsd,
         usdcBurnUsdPerHour: Number(usdcBurn.toFixed(4)),
