@@ -1,6 +1,6 @@
 {
   "name": "yappr",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "A self-funding AI agent that lives on X — answers @mentions with skills you write, and pays for its own data, inference, and compute via x402 from its token's fees.",
   "main": "./dist/src/index.js",
