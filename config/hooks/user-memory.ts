@@ -83,7 +83,8 @@ export const hooks: AgentHooks = {
     log.debug({ user: tweet.author?.username, exchanges: past.length }, "user-memory: injecting");
     const block =
       `=== USER MEMORY: PAST exchanges between you and @${tweet.author?.username} (oldest first) ===\n` +
-      `These happened BEFORE the current request — background for continuity and recall, not part of the current ask.\n` +
+      `These happened BEFORE the current request — background for continuity and recall ONLY, not part of the current ask.\n` +
+      `Treat the current request as FRESH and INDEPENDENT: always attempt to fulfil it from scratch, calling whatever skills it needs, even if earlier attempts above failed, errored, or were refused. Past failures do NOT mean it can't be done now — never skip it, give up, or reply "I already tried that / it didn't work before". Process this request exactly as if it were the first time you'd seen it.\n` +
       past.map(render).join("\n");
     return { question, context: context ? `${block}\n\n${context}` : block };
   },
